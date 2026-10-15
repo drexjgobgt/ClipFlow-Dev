@@ -19,7 +19,9 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-use super::recorder::{EncodedPacket, RecorderError, RollingRingBuffer, TrackKind, HNS_PER_SECOND};
+use super::recorder::{
+    EncodedPacket, QpcClock, RecorderError, RollingRingBuffer, TrackKind, HNS_PER_SECOND,
+};
 
 pub const SAMPLE_RATE: u32 = 48_000;
 pub const CHANNELS: u32 = 2;
@@ -42,6 +44,7 @@ impl AudioCapture {
         ring: Arc<Mutex<RollingRingBuffer>>,
         generation: Arc<AtomicU32>,
         status: Arc<Mutex<Option<String>>>,
+        clock: Arc<QpcClock>,
     ) -> Result<Self, RecorderError> {
         let stop = Arc::new(AtomicBool::new(false));
         let mut handles = Vec::new();
@@ -53,10 +56,11 @@ impl AudioCapture {
             let ring_c = Arc::clone(&ring);
             let gen_c = Arc::clone(&generation);
             let status_c = Arc::clone(&status);
+            let clock_c = Arc::clone(&clock);
             let h = std::thread::Builder::new()
                 .name("clipflow-audio".into())
                 .spawn(move || {
-                    imp::run(system, mic, gg_c, mg_c, stop_c, ring_c, gen_c, status_c);
+                    imp::run(system, mic, gg_c, mg_c, stop_c, ring_c, gen_c, status_c, clock_c);
                 })
                 .map_err(|e| RecorderError::Other(format!("audio thread: {e}")))?;
             handles.push(h);
@@ -86,7 +90,6 @@ mod imp {
         CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL,
         COINIT_MULTITHREADED,
     };
-    use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 
     const KSDATAFORMAT_SUBTYPE_IEEE_FLOAT: windows::core::GUID =
         windows::core::GUID::from_u128(0x00000003_0000_0010_8000_00aa00389b71);
@@ -153,32 +156,32 @@ mod imp {
         })
     }
 
-    unsafe fn drain_endpoint(ep: &Endpoint, out: &mut Vec<f32>, qpc_first: &mut Option<i64>) {
+    unsafe fn drain_endpoint(ep: &mut Endpoint, out: &mut Vec<f32>, qpc_first: &mut Option<i64>) -> bool {
         loop {
             let packet = match ep.capture.GetNextPacketSize() {
                 Ok(p) => p,
-                Err(_) => return,
+                Err(e) => {
+                    log::warn!("[clipflow::audio] GetNextPacketSize failed (device may be reset/disconnected): {e}");
+                    return false;
+                }
             };
             if packet == 0 {
-                return;
+                return true;
             }
             let mut data: *mut u8 = std::ptr::null_mut();
             let mut frames = 0u32;
             let mut flags = 0u32;
             let mut dev_pos = 0u64;
             let mut qpc = 0u64;
-            if ep
-                .capture
-                .GetBuffer(
-                    &mut data,
-                    &mut frames,
-                    &mut flags,
-                    Some(&mut dev_pos),
-                    Some(&mut qpc),
-                )
-                .is_err()
-            {
-                return;
+            if let Err(e) = ep.capture.GetBuffer(
+                &mut data,
+                &mut frames,
+                &mut flags,
+                Some(&mut dev_pos),
+                Some(&mut qpc),
+            ) {
+                log::warn!("[clipflow::audio] GetBuffer failed: {e}");
+                return false;
             }
             if qpc_first.is_none() && qpc != 0 {
                 *qpc_first = Some(qpc as i64);
@@ -359,6 +362,7 @@ mod imp {
         ring: Arc<Mutex<RollingRingBuffer>>,
         generation: Arc<AtomicU32>,
         status: Arc<Mutex<Option<String>>>,
+        clock: Arc<QpcClock>,
     ) {
         unsafe {
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
@@ -368,34 +372,26 @@ mod imp {
                 return;
             }
 
-            // Loopback + the AAC encoder are both *retried* forever: a game
-            // holding the render device in exclusive mode makes the very first
-            // `Initialize` fail with AUDCLNT_E_DEVICE_IN_USE (0x8889000A), and
-            // the AAC MFT can briefly be contended on system wake. ClipFlow
-            // must keep the buffer armed with video while audio sorts itself
-            // out, then join seamlessly — never silently produce audio-less
-            // clips for the whole session.
             let mut loopback: Option<Endpoint> = None;
             let mut microphone: Option<Endpoint> = None;
             let mut encoder: Option<AacEncoder> = None;
             let mut last_attempt = std::time::Instant::now();
 
-            let mut freq = 0i64;
-            let _ = QueryPerformanceFrequency(&mut freq);
-            let mut origin = 0i64;
-            let _ = QueryPerformanceCounter(&mut origin);
-            let freq = if freq == 0 { HNS_PER_SECOND } else { freq };
-
-            // AAC-LC frames are 1024 samples; feed the MFT in exact multiples.
+            // AAC-LC frames are 1024 samples per channel; feed the MFT in exact multiples.
             const FRAME_SAMPLES: usize = 1024 * CHANNELS as usize;
-            let mut pending: Vec<f32> = Vec::with_capacity(FRAME_SAMPLES * 8);
+            let frame_duration_hns: i64 = (1024 * HNS_PER_SECOND) / SAMPLE_RATE as i64;
+
+            let mut sys_pending: Vec<f32> = Vec::with_capacity(FRAME_SAMPLES * 8);
             let mut mic_pending: Vec<f32> = Vec::with_capacity(FRAME_SAMPLES * 8);
+            let mut mixed_pending: Vec<f32> = Vec::with_capacity(FRAME_SAMPLES * 8);
             let mut pcm = Vec::<i16>::with_capacity(FRAME_SAMPLES);
-            let mut samples_written: i64 = 0;
             let mut qpc_first: Option<i64> = None;
 
+            // Audio PTS matches clock time directly.
+            let mut next_pts = clock.now_hns();
+
             while !stop.load(Ordering::Acquire) {
-                // (Re)open endpoints every second until the device is free.
+                // (Re)open endpoints every second if closed or invalidated.
                 if last_attempt.elapsed() >= std::time::Duration::from_secs(1) {
                     last_attempt = std::time::Instant::now();
                     if system && loopback.is_none() {
@@ -428,81 +424,116 @@ mod imp {
                 }
 
                 if loopback.is_none() && microphone.is_none() {
-                    // Nothing captured yet (device busy). Keep the thread alive
-                    // and keep retrying; the video side is unaffected.
+                    // Nothing captured yet (device busy). Keep next_pts tracking live wall-clock
+                    // so when devices arrive, audio does not start at t=0.
+                    next_pts = clock.now_hns();
                     std::thread::sleep(std::time::Duration::from_millis(8));
                     continue;
                 }
 
-                let loopback_before = pending.len();
-                if let Some(ep) = loopback.as_ref() {
-                    drain_endpoint(ep, &mut pending, &mut qpc_first);
+                let sys_start_idx = sys_pending.len();
+                if let Some(ep) = loopback.as_mut() {
+                    if !drain_endpoint(ep, &mut sys_pending, &mut qpc_first) {
+                        loopback = None;
+                    }
                 }
-                let mic_before = mic_pending.len();
-                if let Some(ep) = microphone.as_ref() {
-                    drain_endpoint(ep, &mut mic_pending, &mut qpc_first);
+                let mic_start_idx = mic_pending.len();
+                if let Some(ep) = microphone.as_mut() {
+                    if !drain_endpoint(ep, &mut mic_pending, &mut qpc_first) {
+                        microphone = None;
+                    }
                 }
 
-                // Apply the mix balance to the samples captured *this* loop
-                // only, so gains change live without ever scaling an
-                // already-captured batch twice (and without leaving the tail
-                // of a batch ungained). At 100 % the loops are no-ops and the
-                // output is byte-identical to the original fixed mix.
+                // Apply live volume gains to newly drained samples
                 let gg = game_gain.load(Ordering::Acquire) as f32 * 0.001;
                 let mg = mic_gain.load(Ordering::Acquire) as f32 * 0.001;
-                if gg != 1.0 && pending.len() > loopback_before {
-                    for s in pending.iter_mut().skip(loopback_before) {
+                if gg != 1.0 && sys_pending.len() > sys_start_idx {
+                    for s in sys_pending.iter_mut().skip(sys_start_idx) {
                         *s = (*s * gg).clamp(-1.0, 1.0);
                     }
                 }
-                if mg != 1.0 && mic_pending.len() > mic_before {
-                    for s in mic_pending.iter_mut().skip(mic_before) {
+                if mg != 1.0 && mic_pending.len() > mic_start_idx {
+                    for s in mic_pending.iter_mut().skip(mic_start_idx) {
                         *s = (*s * mg).clamp(-1.0, 1.0);
                     }
                 }
 
-                // Mix the mic in, sample-aligned, -3 dB per source — the same
-                // pad as the original fixed mix; user volumes already rode on
-                // top of the samples above.
-                if !mic_pending.is_empty() {
-                    if loopback.is_none() {
-                        pending.append(&mut mic_pending);
-                    } else {
-                        let n = pending.len().min(mic_pending.len());
-                        for i in 0..n {
-                            pending[i] = (pending[i] * 0.707 + mic_pending[i] * 0.707)
-                                .clamp(-1.0, 1.0);
+                // Mix available samples into mixed_pending.
+                // - If both are enabled, mix them together with -3dB headroom.
+                // - If one source has samples but the other is silent/empty, pad the silent one
+                //   with silence so neither the game audio nor the mic is EVER starved or dropped!
+                if system && mic {
+                    let common = sys_pending.len().min(mic_pending.len());
+                    for i in 0..common {
+                        mixed_pending.push((sys_pending[i] * 0.707 + mic_pending[i] * 0.707).clamp(-1.0, 1.0));
+                    }
+                    sys_pending.drain(..common);
+                    mic_pending.drain(..common);
+
+                    // If mic has excess samples (e.g. game is quiet / loopback gave 0 packets):
+                    // Mix mic over silence so the mic is never dropped!
+                    if sys_pending.is_empty() && mic_pending.len() >= FRAME_SAMPLES {
+                        let take = (mic_pending.len() / FRAME_SAMPLES) * FRAME_SAMPLES;
+                        for s in mic_pending.drain(..take) {
+                            mixed_pending.push((s * 0.707).clamp(-1.0, 1.0));
                         }
-                        mic_pending.drain(..n);
-                        if mic_pending.len() > FRAME_SAMPLES * 16 {
-                            mic_pending.clear(); // mic ran away: resync
+                    }
+                    // If system has excess samples (e.g. user is not speaking into mic):
+                    if mic_pending.is_empty() && sys_pending.len() >= FRAME_SAMPLES {
+                        let take = (sys_pending.len() / FRAME_SAMPLES) * FRAME_SAMPLES;
+                        for s in sys_pending.drain(..take) {
+                            mixed_pending.push((s * 0.707).clamp(-1.0, 1.0));
+                        }
+                    }
+                } else if system {
+                    mixed_pending.append(&mut sys_pending);
+                } else if mic {
+                    mixed_pending.append(&mut mic_pending);
+                }
+
+                let now_hns = clock.now_hns();
+
+                // If elapsed time has outpaced audio samples (e.g. the game is silent so
+                // loopback produced 0 packets, and nobody is speaking into the mic):
+                // Inject silence so audio PTS NEVER freezes and stays in sync with video!
+                if now_hns > next_pts + frame_duration_hns && mixed_pending.len() < FRAME_SAMPLES {
+                    // Detect massive sleep/wake jump (> 2 seconds behind):
+                    if now_hns - next_pts > HNS_PER_SECOND * 2 {
+                        next_pts = now_hns;
+                        mixed_pending.clear();
+                    } else {
+                        while now_hns > next_pts + frame_duration_hns && mixed_pending.len() < FRAME_SAMPLES * 4 {
+                            mixed_pending.extend(std::iter::repeat(0.0f32).take(FRAME_SAMPLES));
                         }
                     }
                 }
 
+                // Cap the queues so runaway buffers cannot grow indefinitely
+                if sys_pending.len() > FRAME_SAMPLES * 16 {
+                    sys_pending.drain(..sys_pending.len() - FRAME_SAMPLES * 16);
+                }
+                if mic_pending.len() > FRAME_SAMPLES * 16 {
+                    mic_pending.drain(..mic_pending.len() - FRAME_SAMPLES * 16);
+                }
+                if mixed_pending.len() > FRAME_SAMPLES * 32 {
+                    mixed_pending.drain(..mixed_pending.len() - FRAME_SAMPLES * 32);
+                }
+
                 let Some(enc) = encoder.as_ref() else {
-                    // Encoder not ready: cap the pending queue so a stalled AAC
-                    // MFT cannot grow the loopback history without bound.
-                    if pending.len() > FRAME_SAMPLES * 16 {
-                        pending.drain(..pending.len() - FRAME_SAMPLES * 16);
-                    }
                     std::thread::sleep(std::time::Duration::from_millis(8));
                     continue;
                 };
 
-                let epoch = qpc_first.unwrap_or(origin);
-                while pending.len() >= FRAME_SAMPLES {
+                while mixed_pending.len() >= FRAME_SAMPLES {
                     pcm.clear();
                     pcm.extend(
-                        pending
+                        mixed_pending
                             .drain(..FRAME_SAMPLES)
                             .map(|s| (s.clamp(-1.0, 1.0) * 32767.0) as i16),
                     );
 
-                    let pts = ((epoch - origin) as i128 * HNS_PER_SECOND as i128 / freq as i128)
-                        as i64
-                        + samples_written * HNS_PER_SECOND / SAMPLE_RATE as i64;
-                    samples_written += 1024;
+                    let pts = next_pts;
+                    next_pts += frame_duration_hns;
 
                     let gen = generation.load(Ordering::Acquire);
                     let ring_ref = &ring;
@@ -550,6 +581,7 @@ mod imp {
         ring: Arc<Mutex<RollingRingBuffer>>,
         generation: Arc<AtomicU32>,
         _status: Arc<Mutex<Option<String>>>,
+        _clock: Arc<QpcClock>,
     ) {
         // 21.3 ms AAC frames of silence keep the muxer path exercised.
         let frame_hns = 1024 * HNS_PER_SECOND / SAMPLE_RATE as i64;
