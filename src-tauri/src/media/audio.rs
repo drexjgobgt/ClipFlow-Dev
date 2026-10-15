@@ -23,9 +23,23 @@ use super::recorder::{
     EncodedPacket, QpcClock, RecorderError, RollingRingBuffer, TrackKind, HNS_PER_SECOND,
 };
 
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioDevice {
+    pub id: String,
+    pub name: String,
+    pub is_default: bool,
+}
+
 pub const SAMPLE_RATE: u32 = 48_000;
 pub const CHANNELS: u32 = 2;
 pub const AAC_BYTES_PER_SECOND: u32 = 24_000; // 192 kbit/s stereo
+
+pub fn enumerate_audio_devices() -> Vec<AudioDevice> {
+    imp::enumerate_audio_devices()
+}
 
 pub struct AudioCapture {
     stop: Arc<AtomicBool>,
@@ -41,6 +55,7 @@ impl AudioCapture {
         mic: bool,
         game_gain: Arc<AtomicU32>,
         mic_gain: Arc<AtomicU32>,
+        mic_device: Arc<parking_lot::RwLock<Option<String>>>,
         ring: Arc<Mutex<RollingRingBuffer>>,
         generation: Arc<AtomicU32>,
         status: Arc<Mutex<Option<String>>>,
@@ -53,6 +68,7 @@ impl AudioCapture {
             let stop_c = Arc::clone(&stop);
             let gg_c = Arc::clone(&game_gain);
             let mg_c = Arc::clone(&mic_gain);
+            let md_c = Arc::clone(&mic_device);
             let ring_c = Arc::clone(&ring);
             let gen_c = Arc::clone(&generation);
             let status_c = Arc::clone(&status);
@@ -60,7 +76,7 @@ impl AudioCapture {
             let h = std::thread::Builder::new()
                 .name("clipflow-audio".into())
                 .spawn(move || {
-                    imp::run(system, mic, gg_c, mg_c, stop_c, ring_c, gen_c, status_c, clock_c);
+                    imp::run(system, mic, gg_c, mg_c, md_c, stop_c, ring_c, gen_c, status_c, clock_c);
                 })
                 .map_err(|e| RecorderError::Other(format!("audio thread: {e}")))?;
             handles.push(h);
@@ -91,25 +107,95 @@ mod imp {
         COINIT_MULTITHREADED,
     };
 
+    use windows::Win32::UI::Shell::PropertiesSystem::PROPERTYKEY;
+
+    const PKEY_DEVICE_FRIENDLY_NAME: PROPERTYKEY = PROPERTYKEY {
+        fmtid: windows::core::GUID::from_u128(0xa45c254e_df1c_4efd_8020_67d146a850e0),
+        pid: 14,
+    };
+
+    #[allow(dead_code)]
+    pub(super) fn enumerate_audio_devices() -> Vec<AudioDevice> {
+        let mut devices = Vec::new();
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            let enumerator: IMMDeviceEnumerator = match CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) {
+                Ok(e) => e,
+                Err(_) => return devices,
+            };
+
+            let default_id = enumerator
+                .GetDefaultAudioEndpoint(eCapture, eConsole)
+                .ok()
+                .and_then(|d| d.GetId().ok())
+                .map(|pw| pw.to_string().unwrap_or_default());
+
+            let collection = match enumerator.EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE) {
+                Ok(c) => c,
+                Err(_) => return devices,
+            };
+
+            let count = collection.GetCount().unwrap_or(0);
+            for i in 0..count {
+                if let Ok(device) = collection.Item(i) {
+                    let id = match device.GetId() {
+                        Ok(pw) => pw.to_string().unwrap_or_default(),
+                        Err(_) => continue,
+                    };
+                    let name = device
+                        .OpenPropertyStore(windows::Win32::System::Com::STGM(0))
+                        .ok()
+                        .and_then(|store| store.GetValue(&PKEY_DEVICE_FRIENDLY_NAME).ok())
+                        .map(|pv| pv.to_string())
+                        .unwrap_or_else(|| "Unknown Microphone".to_string());
+
+                    let is_default = default_id.as_deref() == Some(&id);
+                    devices.push(AudioDevice {
+                        id,
+                        name,
+                        is_default,
+                    });
+                }
+            }
+        }
+        devices
+    }
+
     const KSDATAFORMAT_SUBTYPE_IEEE_FLOAT: windows::core::GUID =
         windows::core::GUID::from_u128(0x00000003_0000_0010_8000_00aa00389b71);
 
-    struct Endpoint {
-        client: IAudioClient,
-        capture: IAudioCaptureClient,
-        channels: u32,
-        _rate: u32,
-        float: bool,
-        bits: u32,
+    pub(super) struct Endpoint {
+        pub(super) client: IAudioClient,
+        pub(super) capture: IAudioCaptureClient,
+        pub(super) channels: u32,
+        pub(super) rate: u32,
+        pub(super) float: bool,
+        pub(super) bits: u32,
+        pub(super) resample_phase: f64,
+        pub(super) temp_stereo: Vec<f32>,
     }
 
-    unsafe fn open_endpoint(loopback: bool) -> windows::core::Result<Endpoint> {
+    pub(super) unsafe fn open_endpoint(loopback: bool, device_id: Option<&str>) -> windows::core::Result<Endpoint> {
         let enumerator: IMMDeviceEnumerator =
             CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
-        let device = enumerator.GetDefaultAudioEndpoint(
-            if loopback { eRender } else { eCapture },
-            eConsole,
-        )?;
+        let device = if loopback {
+            enumerator.GetDefaultAudioEndpoint(eRender, eConsole)?
+        } else if let Some(id) = device_id.filter(|s| !s.is_empty() && *s != "default") {
+            let hstring = windows::core::HSTRING::from(id);
+            match enumerator.GetDevice(&hstring) {
+                Ok(d) => d,
+                Err(e) => {
+                    log::warn!("[clipflow::audio] specific capture device '{id}' not found ({e}), falling back to default");
+                    enumerator
+                        .GetDefaultAudioEndpoint(eCapture, eConsole)
+                        .or_else(|_| enumerator.GetDefaultAudioEndpoint(eCapture, eCommunications))?
+                }
+            }
+        } else {
+            enumerator
+                .GetDefaultAudioEndpoint(eCapture, eConsole)
+                .or_else(|_| enumerator.GetDefaultAudioEndpoint(eCapture, eCommunications))?
+        };
         let client: IAudioClient = device.Activate(CLSCTX_ALL, None)?;
         let mix = client.GetMixFormat()?;
         let wf = &*mix;
@@ -150,10 +236,46 @@ mod imp {
             client,
             capture,
             channels,
-            _rate: rate,
+            rate,
             float,
             bits,
+            resample_phase: 0.0,
+            temp_stereo: Vec::new(),
         })
+    }
+
+    /// Resamples stereo interleaved float buffer from `in_rate` to `out_rate`.
+    fn resample_stereo(
+        src: &[f32],
+        in_rate: u32,
+        out_rate: u32,
+        phase: &mut f64,
+        out: &mut Vec<f32>,
+    ) {
+        if in_rate == out_rate || src.is_empty() {
+            out.extend_from_slice(src);
+            return;
+        }
+        let in_frames = src.len() / 2;
+        if in_frames <= 1 {
+            return;
+        }
+        let ratio = in_rate as f64 / out_rate as f64;
+        let mut p = *phase;
+        while p < (in_frames - 1) as f64 {
+            let idx = p as usize;
+            let frac = (p - idx as f64) as f32;
+            let i0 = idx * 2;
+            let i1 = (idx + 1) * 2;
+            let l0 = src[i0];
+            let r0 = src[i0 + 1];
+            let l1 = src[i1];
+            let r1 = src[i1 + 1];
+            out.push(l0 + (l1 - l0) * frac);
+            out.push(r0 + (r1 - r0) * frac);
+            p += ratio;
+        }
+        *phase = (p - in_frames as f64).max(0.0);
     }
 
     unsafe fn drain_endpoint(ep: &mut Endpoint, out: &mut Vec<f32>, qpc_first: &mut Option<i64>) -> bool {
@@ -189,17 +311,35 @@ mod imp {
 
             let silent = (flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32) != 0;
             let n = frames as usize * ep.channels as usize;
-            if silent || data.is_null() {
-                out.extend(std::iter::repeat(0.0).take(frames as usize * CHANNELS as usize));
-            } else if ep.float {
-                let src = std::slice::from_raw_parts(data as *const f32, n);
-                downmix(src, ep.channels, out);
-            } else if ep.bits == 16 {
-                let src = std::slice::from_raw_parts(data as *const i16, n);
-                let tmp: Vec<f32> = src.iter().map(|s| *s as f32 / 32768.0).collect();
-                downmix(&tmp, ep.channels, out);
+
+            if ep.rate == SAMPLE_RATE {
+                if silent || data.is_null() {
+                    out.extend(std::iter::repeat(0.0).take(frames as usize * CHANNELS as usize));
+                } else if ep.float {
+                    let src = std::slice::from_raw_parts(data as *const f32, n);
+                    downmix(src, ep.channels, out);
+                } else if ep.bits == 16 {
+                    let src = std::slice::from_raw_parts(data as *const i16, n);
+                    let tmp: Vec<f32> = src.iter().map(|s| *s as f32 / 32768.0).collect();
+                    downmix(&tmp, ep.channels, out);
+                } else {
+                    out.extend(std::iter::repeat(0.0).take(frames as usize * CHANNELS as usize));
+                }
             } else {
-                out.extend(std::iter::repeat(0.0).take(frames as usize * CHANNELS as usize));
+                ep.temp_stereo.clear();
+                if silent || data.is_null() {
+                    ep.temp_stereo.extend(std::iter::repeat(0.0).take(frames as usize * CHANNELS as usize));
+                } else if ep.float {
+                    let src = std::slice::from_raw_parts(data as *const f32, n);
+                    downmix(src, ep.channels, &mut ep.temp_stereo);
+                } else if ep.bits == 16 {
+                    let src = std::slice::from_raw_parts(data as *const i16, n);
+                    let tmp: Vec<f32> = src.iter().map(|s| *s as f32 / 32768.0).collect();
+                    downmix(&tmp, ep.channels, &mut ep.temp_stereo);
+                } else {
+                    ep.temp_stereo.extend(std::iter::repeat(0.0).take(frames as usize * CHANNELS as usize));
+                }
+                resample_stereo(&ep.temp_stereo, ep.rate, SAMPLE_RATE, &mut ep.resample_phase, out);
             }
             let _ = ep.capture.ReleaseBuffer(frames);
         }
@@ -336,9 +476,10 @@ mod imp {
     /// already carries the human-readable reason).
     unsafe fn open_reported(
         loopback: bool,
+        device_id: Option<&str>,
         status: &Mutex<Option<String>>,
     ) -> Result<Option<Endpoint>, ()> {
-        match open_endpoint(loopback) {
+        match open_endpoint(loopback, device_id) {
             Ok(ep) => Ok(Some(ep)),
             Err(e) => {
                 let msg = if loopback {
@@ -358,6 +499,7 @@ mod imp {
         mic: bool,
         game_gain: Arc<AtomicU32>,
         mic_gain: Arc<AtomicU32>,
+        mic_device: Arc<parking_lot::RwLock<Option<String>>>,
         stop: Arc<AtomicBool>,
         ring: Arc<Mutex<RollingRingBuffer>>,
         generation: Arc<AtomicU32>,
@@ -376,6 +518,7 @@ mod imp {
             let mut microphone: Option<Endpoint> = None;
             let mut encoder: Option<AacEncoder> = None;
             let mut last_attempt = std::time::Instant::now();
+            let mut current_mic_id = mic_device.read().clone();
 
             // AAC-LC frames are 1024 samples per channel; feed the MFT in exact multiples.
             const FRAME_SAMPLES: usize = 1024 * CHANNELS as usize;
@@ -391,18 +534,28 @@ mod imp {
             let mut next_pts = clock.now_hns();
 
             while !stop.load(Ordering::Acquire) {
+                // If the selected microphone device changes live, switch immediately.
+                let requested_mic_id = mic_device.read().clone();
+                if requested_mic_id != current_mic_id {
+                    current_mic_id = requested_mic_id;
+                    if let Some(ep) = microphone.take() {
+                        let _ = ep.client.Stop();
+                    }
+                    last_attempt = std::time::Instant::now() - std::time::Duration::from_secs(2);
+                }
+
                 // (Re)open endpoints every second if closed or invalidated.
                 if last_attempt.elapsed() >= std::time::Duration::from_secs(1) {
                     last_attempt = std::time::Instant::now();
                     if system && loopback.is_none() {
-                        match open_reported(true, &status) {
+                        match open_reported(true, None, &status) {
                             Ok(Some(ep)) => loopback = Some(ep),
                             Ok(None) => {}
                             Err(()) => {}
                         }
                     }
                     if mic && microphone.is_none() {
-                        match open_reported(false, &status) {
+                        match open_reported(false, current_mic_id.as_deref(), &status) {
                             Ok(Some(ep)) => microphone = Some(ep),
                             Ok(None) => {}
                             Err(()) => {}
@@ -572,11 +725,27 @@ mod imp {
 mod imp {
     use super::*;
 
+    pub(super) fn enumerate_audio_devices() -> Vec<AudioDevice> {
+        vec![
+            AudioDevice {
+                id: "default".into(),
+                name: "Default Microphone (Simulated)".into(),
+                is_default: true,
+            },
+            AudioDevice {
+                id: "headset_mic".into(),
+                name: "Headset Microphone (Simulated)".into(),
+                is_default: false,
+            },
+        ]
+    }
+
     pub(super) fn run(
         _system: bool,
         _mic: bool,
         _game_gain: Arc<AtomicU32>,
         _mic_gain: Arc<AtomicU32>,
+        _mic_device: Arc<parking_lot::RwLock<Option<String>>>,
         stop: Arc<AtomicBool>,
         ring: Arc<Mutex<RollingRingBuffer>>,
         generation: Arc<AtomicU32>,
@@ -600,3 +769,25 @@ mod imp {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg(windows)]
+    fn test_enum_mic() {
+        let devices = imp::enumerate_audio_devices();
+        println!("Enumerated audio devices: {:#?}", devices);
+        unsafe {
+            for dev in &devices {
+                let ep = imp::open_endpoint(false, Some(&dev.id));
+                match ep {
+                    Ok(e) => println!("Successfully opened {}: channels={}, rate={}, float={}, bits={}", dev.name, e.channels, e.rate, e.float, e.bits),
+                    Err(err) => println!("Failed to open {}: {:?}", dev.name, err),
+                }
+            }
+        }
+    }
+}
+

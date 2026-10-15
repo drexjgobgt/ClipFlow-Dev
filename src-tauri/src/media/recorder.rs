@@ -141,6 +141,8 @@ pub struct RecorderConfig {
     pub game_volume: u32,
     /// Mix balance for the microphone source, 0-100 (100 = unity gain).
     pub mic_volume: u32,
+    /// Specific microphone device ID, or None for system default.
+    pub mic_device_id: Option<String>,
     pub output_dir: PathBuf,
     /// Per-game subfolder the next flush lands in (None = output root).
     pub output_subfolder: Option<String>,
@@ -160,6 +162,7 @@ impl Default for RecorderConfig {
             capture_microphone: false,
             game_volume: 100,
             mic_volume: 100,
+            mic_device_id: None,
             output_dir: default_output_dir(),
             output_subfolder: None,
         }
@@ -596,6 +599,8 @@ pub struct CaptureEngine {
     /// Live mix levels (permille, 0-1000) shared with the audio thread.
     game_gain: Arc<AtomicU32>,
     mic_gain: Arc<AtomicU32>,
+    /// Specific microphone device ID (None = Windows default console device).
+    mic_device: Arc<parking_lot::RwLock<Option<String>>>,
     /// Set by the muxer thread once the first flush produced a valid header.
     video_format: Arc<Mutex<Option<VideoFormatHeader>>>,
 }
@@ -617,6 +622,7 @@ pub struct VideoFormatHeader {
 impl CaptureEngine {
     pub fn new() -> Self {
         let cfg = RecorderConfig::default();
+        let mic_dev = cfg.mic_device_id.clone();
         Self {
             shared: Arc::new(SharedState::new(&cfg)),
             config: RwLock::new(cfg),
@@ -625,6 +631,7 @@ impl CaptureEngine {
             audio_error: Arc::new(parking_lot::Mutex::new(None)),
             game_gain: Arc::new(AtomicU32::new(1000)),
             mic_gain: Arc::new(AtomicU32::new(1000)),
+            mic_device: Arc::new(parking_lot::RwLock::new(mic_dev)),
             video_format: Arc::new(Mutex::new(None)),
         }
     }
@@ -721,11 +728,13 @@ impl CaptureEngine {
                 (cfg.mic_volume.min(100) as u32) * 10,
                 Ordering::Release,
             );
+            *self.mic_device.write() = cfg.mic_device_id.clone();
             match crate::media::audio::AudioCapture::start(
                 cfg.capture_system_audio,
                 cfg.capture_microphone,
                 Arc::clone(&self.game_gain),
                 Arc::clone(&self.mic_gain),
+                Arc::clone(&self.mic_device),
                 Arc::clone(&self.shared.ring),
                 Arc::clone(&self.shared.generation),
                 Arc::clone(&self.audio_error),
@@ -828,6 +837,11 @@ impl CaptureEngine {
     pub fn set_audio_volumes(&self, game: u32, mic: u32) {
         self.game_gain.store(game.min(100) * 10, Ordering::Release);
         self.mic_gain.store(mic.min(100) * 10, Ordering::Release);
+    }
+
+    /// Selects a specific microphone device live, or None to follow system default.
+    pub fn set_mic_device(&self, device_id: Option<String>) {
+        *self.mic_device.write() = device_id;
     }
 
     pub fn simulate_device_loss(&self) {
