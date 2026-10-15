@@ -653,7 +653,7 @@ pub fn open_releases_page(app: AppHandle) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
     app.opener()
         .open_url(
-            "https://github.com/jaimitus/ClipFlow/releases",
+            "https://github.com/drexjgobgt/ClipFlow-Dev/releases",
             None::<&str>,
         )
         .map_err(|e| e.to_string())

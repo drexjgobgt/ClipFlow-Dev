@@ -76,10 +76,10 @@ ClipFlow was built to eliminate the bloat, mandatory accounts, and high RAM over
 ## 🚀 Quick Start
 
 ### 1. Download & Run
-Choose your preferred flavor from the [Latest Releases](https://github.com/drexjgobgt/ClipFlow/releases/latest) page (or view [all releases](https://github.com/drexjgobgt/ClipFlow/releases)):
-- **Standalone Portable:** [`ClipFlow_v1.4.2_Portable.exe`](https://github.com/drexjgobgt/ClipFlow/releases/latest) (Single executable, no installation needed)
-- **Setup Installer:** [`ClipFlow_1.4.2_x64-setup.exe`](https://github.com/drexjgobgt/ClipFlow/releases/latest) (NSIS Installer)
-- **MSI Package:** [`ClipFlow_1.4.2_x64_en-US.msi`](https://github.com/drexjgobgt/ClipFlow/releases/latest) (Windows Installer)
+Choose your preferred flavor from the [Latest Releases](https://github.com/drexjgobgt/ClipFlow-Dev/releases/latest) page (or view [all releases](https://github.com/drexjgobgt/ClipFlow-Dev/releases)):
+- **Standalone Portable:** [`ClipFlow_v1.4.2_Portable.exe`](https://github.com/drexjgobgt/ClipFlow-Dev/releases/latest) (Single executable, no installation needed)
+- **Setup Installer:** [`ClipFlow_1.4.2_x64-setup.exe`](https://github.com/drexjgobgt/ClipFlow-Dev/releases/latest) (NSIS Installer)
+- **MSI Package:** [`ClipFlow_1.4.2_x64_en-US.msi`](https://github.com/drexjgobgt/ClipFlow-Dev/releases/latest) (Windows Installer)
 
 > 💡 Install with the **NSIS setup** (or MSI) to get **automatic updates** — the portable exe does not self-update.
 
@@ -104,7 +104,7 @@ Saved clips are stored in `%USERPROFILE%\Videos\ClipFlow`. PNG snapshots land in
 
 ```powershell
 # Clone repository
-git clone https://github.com/drexjgobgt/ClipFlow.git
+git clone https://github.com/drexjgobgt/ClipFlow-Dev.git
 cd ClipFlow
 
 # Install frontend dependencies

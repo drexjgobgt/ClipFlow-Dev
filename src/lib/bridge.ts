@@ -450,7 +450,7 @@ export const clipflow = {
       await invoke("open_releases_page");
       return;
     }
-    window.open("https://github.com/jaimitus/ClipFlow/releases", "_blank");
+    window.open("https://github.com/drexjgobgt/ClipFlow-Dev/releases", "_blank");
   },
 
   async copyClip(path: string): Promise<void> {
