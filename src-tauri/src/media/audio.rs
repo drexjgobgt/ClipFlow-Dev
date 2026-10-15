@@ -114,11 +114,11 @@ mod imp {
         let mix = client.GetMixFormat()?;
         let wf = &*mix;
 
-        let mut flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM;
-        if loopback {
-            // Loopback streams cannot be event driven on all drivers; poll them.
-            flags = AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM;
-        }
+        let flags = if loopback {
+            AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
+        } else {
+            AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
+        };
 
         client.Initialize(
             AUDCLNT_SHAREMODE_SHARED,
