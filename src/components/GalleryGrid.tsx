@@ -28,6 +28,9 @@ interface Props {
   clips: ClipMetadata[];
   loading?: boolean;
   compact?: boolean;
+  /** Total count of all clips in the library (before filtering) */
+  totalClipsCount?: number;
+  onResetFilters?: () => void;
   /** Paths currently selected (multi-select), as a Set for O(1) lookups. */
   selectedPaths?: ReadonlySet<string>;
   /** When on, a plain card click selects instead of opening the trimmer. */
@@ -62,10 +65,10 @@ function IconButton({
       className={cn(
         "grid h-7 w-7 place-items-center rounded-md border text-[11px] backdrop-blur-sm transition-colors duration-150",
         danger
-          ? "border-red-500/30 bg-[#161a22]/90 text-red-300 hover:border-red-400/60 hover:bg-red-500/20"
+          ? "border-red-500/40 bg-[#161a22]/95 text-red-300 hover:border-red-400 hover:bg-red-500/25"
           : highlight
-            ? "border-amber-400/40 bg-[#161a22]/90 text-amber-300 hover:border-amber-400/70 hover:bg-amber-400/20"
-            : "border-[#343e4f] bg-[#161a22]/90 text-[#b5c0d0] hover:border-blue-400/60 hover:bg-[#1f2633] hover:text-white",
+            ? "border-amber-400/50 bg-[#161a22]/95 text-amber-300 hover:border-amber-400 hover:bg-amber-400/25"
+            : "border-[#384252] bg-[#161a22]/95 text-[#a0a9b6] hover:border-[#64b5f6]/70 hover:bg-[#222832] hover:text-[#e8ecf2]",
       )}
     >
       {children}
@@ -130,15 +133,32 @@ const ClipCard = memo(function ClipCard({
   const handleMouseEnter = useCallback(() => {
     setHovering(true);
     const v = videoRef.current;
-    if (v) {
+    if (v && src) {
+      if (!v.src) v.src = src;
       v.currentTime = 0;
       void v.play().catch(() => undefined);
     }
-  }, []);
+  }, [src]);
 
   const handleMouseLeave = useCallback(() => {
     setHovering(false);
-    videoRef.current?.pause();
+    const v = videoRef.current;
+    if (v) {
+      v.pause();
+      v.removeAttribute("src");
+      v.load();
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      const v = videoRef.current;
+      if (v) {
+        v.pause();
+        v.removeAttribute("src");
+        v.load();
+      }
+    };
   }, []);
 
   const handleClick = useCallback(
@@ -158,8 +178,8 @@ const ClipCard = memo(function ClipCard({
       className={cn(
         "panel panel-hover group relative cursor-pointer overflow-hidden rounded-xl transition-all duration-150",
         selected
-          ? "border-blue-500 ring-2 ring-blue-500/40 bg-[#1a202a]"
-          : "hover:border-[#384354]",
+          ? "border-[#64b5f6] ring-2 ring-[#64b5f6]/40 bg-[#1d2430]"
+          : "hover:border-[#444f63]",
       )}
       onClick={handleClick}
       onMouseEnter={handleMouseEnter}
@@ -180,14 +200,13 @@ const ClipCard = memo(function ClipCard({
           />
         ) : (
           <div className="absolute inset-0 grid place-items-center bg-[#13161c]">
-            <span className="font-mono text-[10px] text-[#5d6878]">DECODING FRAME…</span>
+            <span className="font-mono text-[10px] text-[#727e90]">DECODING FRAME…</span>
           </div>
         )}
 
         {src && (
           <video
             ref={videoRef}
-            src={src}
             muted
             loop
             playsInline
@@ -210,19 +229,33 @@ const ClipCard = memo(function ClipCard({
         )}
 
         {/* Duration badge */}
-        <span className="absolute bottom-2 left-2.5 rounded bg-black/80 px-1.5 py-0.5 font-mono text-[11px] font-medium text-[#e6eaf0] border border-white/10">
+        <span className="absolute bottom-2 left-2.5 rounded bg-black/80 px-1.5 py-0.5 font-mono text-[11px] font-medium text-[#e8ecf2] border border-white/10">
           {formatDuration(clip.duration_seconds)}
         </span>
 
+        {/* Audio availability badge */}
+        {clip.has_audio && (
+          <span
+            className="absolute bottom-2 left-16 rounded bg-black/80 px-1.5 py-0.5 font-mono text-[10px] text-[#a0a9b6] border border-white/10 flex items-center gap-1"
+            title="Recorded with game audio"
+          >
+            <svg viewBox="0 0 16 16" className="h-2.5 w-2.5 fill-current">
+              <path d="M11.536 14.01A8.473 8.473 0 0 0 14.026 8a8.47 8.47 0 0 0-2.49-6.01l-.708.707A7.476 7.476 0 0 1 13.025 8c0 2.071-.84 3.946-2.197 5.303l.708.707z" />
+              <path d="M6.717 3.55A.5.5 0 0 1 7 4v8a.5.5 0 0 1-.812.39L3.825 10.5H1.5A.5.5 0 0 1 1 10V6a.5.5 0 0 1 .5-.5h2.325l2.363-1.89a.5.5 0 0 1 .529-.06z" />
+            </svg>
+            Audio
+          </span>
+        )}
+
         {/* Format / resolution badge */}
-        <span className="absolute bottom-2 right-2.5 rounded bg-black/80 px-1.5 py-0.5 font-mono text-[10px] text-[#9ba6b6] border border-white/10">
+        <span className="absolute bottom-2 right-2.5 rounded bg-black/80 px-1.5 py-0.5 font-mono text-[10px] text-[#a0a9b6] border border-white/10">
           {clip.height}p{clip.fps}
         </span>
 
         {/* Favorite indicator */}
         {clip.favorite && (
           <span
-            className="absolute left-2.5 top-8 rounded bg-amber-500/90 px-1.5 py-0.5 font-mono text-[9px] font-bold text-black"
+            className="absolute left-2.5 top-8 rounded bg-amber-500/95 px-1.5 py-0.5 font-mono text-[9px] font-bold text-black"
             title="Favorited clip"
           >
             ★
@@ -314,27 +347,27 @@ const ClipCard = memo(function ClipCard({
 
       {/* Card Content Footer */}
       <div className={compact ? "px-2.5 py-2" : "px-3 py-2.5"}>
-        <div className="h-5 truncate text-[13px] font-medium text-[#e2e7ef]">{clip.title}</div>
+        <div className="h-5 truncate text-[13px] font-medium text-[#e8ecf2]">{clip.title}</div>
         <div className="mt-1 flex h-4 items-center gap-1 overflow-hidden">
           {clip.tags.length > 0 && (
             <>
               {clip.tags.slice(0, 3).map((t) => (
                 <span
                   key={t}
-                  className="shrink-0 rounded border border-[#2f3846] bg-[#1e242f] px-1.5 py-px font-mono text-[9px] text-[#9ca7b6]"
+                  className="shrink-0 rounded border border-[#303744] bg-[#222832] px-1.5 py-px font-mono text-[9px] text-[#a0a9b6]"
                 >
                   #{t}
                 </span>
               ))}
               {clip.tags.length > 3 && (
-                <span className="shrink-0 font-mono text-[9px] text-[#6d798a]">
+                <span className="shrink-0 font-mono text-[9px] text-[#727e90]">
                   +{clip.tags.length - 3}
                 </span>
               )}
             </>
           )}
         </div>
-        <div className="mt-1.5 flex items-center justify-between font-mono text-[10px] text-[#7d8a9c]">
+        <div className="mt-1.5 flex items-center justify-between font-mono text-[10px] text-[#727e90]">
           <span>{formatRelativeTime(clip.created_unix_ms)}</span>
           <span>{formatBytes(clip.size_bytes)}</span>
         </div>
@@ -347,6 +380,8 @@ const GalleryGrid = memo(function GalleryGrid({
   clips,
   loading,
   compact,
+  totalClipsCount,
+  onResetFilters,
   selectedPaths,
   selectMode,
   onOpen,
@@ -370,31 +405,59 @@ const GalleryGrid = memo(function GalleryGrid({
     content = (
       <div className={gridClass}>
         {Array.from({ length: compact ? 8 : 6 }).map((_, i) => (
-          <div key={i} className="panel h-[190px] animate-pulse rounded-xl bg-[#171b22]" />
+          <div key={i} className="panel h-[190px] animate-pulse rounded-xl bg-[#191d24]" />
         ))}
       </div>
     );
   } else if (clips.length === 0) {
-    content = (
-      <div className="panel flex flex-col items-center justify-center gap-3 rounded-xl px-6 py-16 text-center">
-        <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-[#2b3342] bg-[#1e242f] text-[#8692a3]">
-          <svg viewBox="0 0 24 24" className="h-6 w-6 fill-none stroke-current" strokeWidth="1.5">
-            <rect x="2" y="4" width="20" height="16" rx="2" />
-            <path d="M7 4v16M17 4v16M2 12h20M2 8h5M2 16h5M17 8h5M17 16h5" />
-          </svg>
+    if (totalClipsCount && totalClipsCount > 0) {
+      content = (
+        <div className="panel flex flex-col items-center justify-center gap-3 rounded-xl px-6 py-14 text-center">
+          <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-[#303744] bg-[#222832] text-[#a0a9b6]">
+            <svg viewBox="0 0 24 24" className="h-6 w-6 fill-none stroke-current" strokeWidth="1.5">
+              <circle cx="11" cy="11" r="8" />
+              <path d="m21 21-4.35-4.35" />
+            </svg>
+          </div>
+          <div className="text-[14px] font-semibold text-[#e8ecf2]">
+            No clips match your search
+          </div>
+          <p className="max-w-sm text-[12px] leading-relaxed text-[#a0a9b6]">
+            No recorded clips match the current search query or game filters.
+          </p>
+          {onResetFilters && (
+            <button
+              type="button"
+              onClick={onResetFilters}
+              className="mt-1 rounded-lg border border-[#64b5f6]/40 bg-[#64b5f6]/10 px-3.5 py-1.5 text-[12px] font-medium text-[#64b5f6] hover:bg-[#64b5f6]/20 transition-colors"
+            >
+              Clear Search & Filters
+            </button>
+          )}
         </div>
-        <div className="font-mono text-[13px] font-semibold tracking-wider text-[#d4dae3]">
-          NO CLIPS RECORDED YET
+      );
+    } else {
+      content = (
+        <div className="panel flex flex-col items-center justify-center gap-3 rounded-xl px-6 py-16 text-center">
+          <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-[#303744] bg-[#222832] text-[#a0a9b6]">
+            <svg viewBox="0 0 24 24" className="h-6 w-6 fill-none stroke-current" strokeWidth="1.5">
+              <rect x="2" y="4" width="20" height="16" rx="2" />
+              <path d="M7 4v16M17 4v16M2 12h20M2 8h5M2 16h5M17 8h5M17 16h5" />
+            </svg>
+          </div>
+          <div className="text-[14px] font-semibold text-[#e8ecf2]">
+            No clips recorded yet
+          </div>
+          <p className="max-w-sm text-[12px] leading-relaxed text-[#a0a9b6]">
+            The rolling buffer is active in memory. Press{" "}
+            <kbd className="rounded border border-[#384252] bg-[#222832] px-1.5 py-0.5 font-mono text-[11px] text-[#e8ecf2]">
+              Alt + C
+            </kbd>{" "}
+            at any time while playing to save the last replay moments instantly.
+          </p>
         </div>
-        <p className="max-w-sm text-[12px] leading-relaxed text-[#8692a3]">
-          The rolling buffer is running in memory. Press{" "}
-          <kbd className="rounded border border-[#3b4556] bg-[#1e242f] px-1.5 py-0.5 font-mono text-[11px] text-[#e6eaf0]">
-            Alt + C
-          </kbd>{" "}
-          at any time while playing to save the last replay moments instantly.
-        </p>
-      </div>
-    );
+      );
+    }
   } else {
     const rows: React.ReactNode[] = [];
     for (let r = startRow; r < endRow; r++) {

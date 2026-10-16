@@ -12,10 +12,10 @@ export function Row({
   children: ReactNode;
 }) {
   return (
-    <div className="flex items-start justify-between gap-4 border-b border-[#232934] py-3.5 last:border-0">
+    <div className="flex items-start justify-between gap-4 border-b border-[#303744] py-3.5 last:border-0">
       <div className="min-w-0 pr-2">
-        <div className="text-[13px] font-medium text-[#e2e7ef]">{label}</div>
-        {hint && <div className="mt-0.5 text-[12px] leading-normal text-[#8d98a8]">{hint}</div>}
+        <div className="text-[13px] font-medium text-[#e8ecf2]">{label}</div>
+        {hint && <div className="mt-0.5 text-[12px] leading-normal text-[#a0a9b6]">{hint}</div>}
       </div>
       <div className="shrink-0">{children}</div>
     </div>
@@ -31,8 +31,8 @@ export function Toggle({ on, onClick, label }: { on: boolean; onClick: () => voi
       aria-label={label}
       onClick={onClick}
       className={cn(
-        "group relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[#111318]",
-        on ? "bg-blue-600 hover:bg-blue-500" : "bg-[#252c38] hover:bg-[#2e3746]",
+        "group relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#64b5f6] focus-visible:ring-offset-2 focus-visible:ring-offset-[#111318]",
+        on ? "bg-[#64b5f6] hover:bg-[#90caf9]" : "bg-[#2a3340] hover:bg-[#343e4e]",
       )}
     >
       <span

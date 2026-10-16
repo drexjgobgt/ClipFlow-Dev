@@ -16,10 +16,10 @@ function StatBox({
   sub?: string;
 }) {
   return (
-    <div className="rounded-lg border border-[#232934] bg-[#14171e] px-3.5 py-3">
-      <div className="font-mono text-[10px] font-medium uppercase tracking-wider text-[#7e8b9d]">{label}</div>
-      <div className="mt-1 font-mono text-[17px] font-semibold text-[#e6eaf0]">{value}</div>
-      {sub && <div className="mt-1 text-[11px] text-[#717d8e]">{sub}</div>}
+    <div className="rounded-lg border border-[#303744] bg-[#191d24] px-3.5 py-3">
+      <div className="text-[11px] font-semibold tracking-wide text-[#a0a9b6]">{label}</div>
+      <div className="mt-1 font-mono text-[18px] font-semibold text-[#e8ecf2]">{value}</div>
+      {sub && <div className="mt-0.5 text-[11px] text-[#727e90]">{sub}</div>}
     </div>
   );
 }
@@ -51,57 +51,62 @@ export default function StatsPanel({ clips }: Props) {
   }, [clips, weekAgo]);
 
   return (
-    <section className="panel rounded-xl p-4">
-      <h3 className="font-mono text-[11px] font-semibold tracking-wider text-[#9aa5b5]">
-        CLIP STATISTICS
-      </h3>
+    <section className="panel rounded-xl p-5 space-y-4">
+      <div className="border-b border-[#303744] pb-3">
+        <h3 className="text-[13px] font-semibold text-[#e8ecf2]">
+          Library Statistics
+        </h3>
+        <p className="text-[11px] text-[#a0a9b6] mt-0.5">
+          Overview of recorded gameplay storage and tagged games
+        </p>
+      </div>
 
-      <div className="mt-3.5 grid grid-cols-2 gap-2.5">
+      <div className="grid grid-cols-2 gap-3">
         <StatBox
-          label="TOTAL CLIPS"
+          label="Total Saved Clips"
           value={String(clips.length)}
           sub={formatDuration(stats.totalSeconds)}
         />
         <StatBox
-          label="STORAGE USED"
+          label="Disk Storage Used"
           value={formatBytes(stats.totalBytes)}
           sub="output directory"
         />
         <StatBox
-          label="THIS WEEK"
+          label="Recorded This Week"
           value={String(stats.thisWeek)}
           sub={formatBytes(stats.thisWeekBytes)}
         />
         <StatBox
-          label="GAMES TAGGED"
+          label="Games Tagged"
           value={String(stats.rows.filter((r) => r.game !== "General").length)}
-          sub="per-game subfolders"
+          sub="per-game folders"
         />
       </div>
 
-      <div className="mt-4 border-t border-[#232934] pt-3.5">
-        <div className="font-mono text-[10px] font-medium uppercase tracking-wider text-[#7e8b9d]">
-          STORAGE BY GAME
+      <div className="border-t border-[#303744] pt-4">
+        <div className="text-[11px] font-semibold tracking-wide text-[#a0a9b6]">
+          Storage Usage by Game
         </div>
         {stats.rows.length === 0 ? (
-          <p className="mt-2 text-[12px] text-[#717d8e]">
+          <p className="mt-2 text-[12px] text-[#727e90]">
             No clips recorded yet. Storage breakdown appears after saving your first clip.
           </p>
         ) : (
-          <ul className="mt-2.5 space-y-2.5">
+          <ul className="mt-3 space-y-3">
             {stats.rows.map((r) => (
               <li key={r.game}>
-                <div className="flex items-center justify-between font-mono text-[11px]">
-                  <span className="truncate font-medium text-[#d4dae3]">
-                    {r.game.toUpperCase()}
+                <div className="flex items-center justify-between text-[12px]">
+                  <span className="truncate font-medium text-[#e8ecf2]">
+                    {r.game}
                   </span>
-                  <span className="shrink-0 text-[#7e8b9d]">
-                    {r.clips} clip{r.clips === 1 ? "" : "s"} · {formatBytes(r.bytes)}
+                  <span className="shrink-0 font-mono text-[11px] text-[#727e90]">
+                    {r.clips} {r.clips === 1 ? "clip" : "clips"} · {formatBytes(r.bytes)}
                   </span>
                 </div>
-                <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-[#11141a]">
+                <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-[#111318]">
                   <div
-                    className="h-full rounded-full bg-blue-500"
+                    className="h-full rounded-full bg-[#64b5f6]"
                     style={{ width: `${(r.bytes / stats.maxBytes) * 100}%` }}
                   />
                 </div>
@@ -111,8 +116,8 @@ export default function StatsPanel({ clips }: Props) {
         )}
       </div>
 
-      <p className="mt-4 text-[11px] leading-relaxed text-[#687383]">
-        Clips saved with game organization active are saved into Videos/ClipFlow/&lt;game&gt;/ folders.
+      <p className="border-t border-[#303744] pt-3 text-[11px] leading-relaxed text-[#727e90]">
+        Clips saved with game organization active are automatically sorted into Videos\ClipFlow\&lt;game&gt;\ subfolders.
       </p>
     </section>
   );

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type {
   AppSettings,
   CaptureProfile,
@@ -28,7 +28,7 @@ function slugify(s: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
-/** One profile row: name, summary, APPLY / EDIT / DELETE. */
+/** One profile row: name, summary, Apply / Edit / Delete. */
 function ProfileCard({
   profile,
   active,
@@ -49,26 +49,26 @@ function ProfileCard({
       className={cn(
         "flex items-center justify-between gap-3 rounded-lg border px-3.5 py-2.5 transition-colors duration-150",
         active
-          ? "border-blue-500/50 bg-[#16202e]"
-          : "border-[#232934] bg-[#14171e] hover:border-[#313a49]",
+          ? "border-[#64b5f6]/50 bg-[#1c2432]"
+          : "border-[#303744] bg-[#191d24] hover:border-[#384252]",
       )}
     >
       <div className="min-w-0 pr-2">
         <div className="flex items-center gap-2">
-          <span className="truncate text-[13px] font-medium text-[#e2e7ef]">
+          <span className="truncate text-[13px] font-medium text-[#e8ecf2]">
             {profile.name}
           </span>
           {active && (
-            <span className="rounded border border-blue-500/30 bg-blue-500/10 px-1.5 py-0.5 font-mono text-[9px] font-semibold tracking-wider text-blue-300">
-              ACTIVE
+            <span className="rounded border border-[#64b5f6]/30 bg-[#64b5f6]/10 px-1.5 py-0.5 font-mono text-[9px] font-semibold tracking-wide text-[#64b5f6]">
+              Active
             </span>
           )}
         </div>
-        <div className="mt-0.5 truncate font-mono text-[11px] text-[#7d8a9c]">
+        <div className="mt-0.5 truncate font-mono text-[11px] text-[#a0a9b6]">
           {profile.bufferSeconds >= 60
             ? `${profile.bufferSeconds / 60}m`
             : `${profile.bufferSeconds}s`}{" "}
-          buffer · {profile.targetFps} fps · {(profile.bitrateKbps / 1000).toFixed(0)} Mb/s ·{" "}
+          buffer · {profile.targetFps} FPS · {(profile.bitrateKbps / 1000).toFixed(0)} Mb/s ·{" "}
           {profile.codec.toUpperCase()}
         </div>
       </div>
@@ -77,28 +77,28 @@ function ProfileCard({
           type="button"
           onClick={onApply}
           className={cn(
-            "rounded border px-2.5 py-1 font-mono text-[10px] font-semibold tracking-wider transition-colors",
+            "rounded border px-2.5 py-1 text-[11px] font-medium tracking-wide transition-colors",
             active
-              ? "border-blue-500/60 bg-blue-500/20 text-blue-200 hover:bg-blue-500/30"
-              : "border-[#313a49] bg-[#1a202a] text-[#c3cddb] hover:border-blue-400 hover:text-white",
+              ? "border-[#64b5f6]/60 bg-[#64b5f6]/20 text-[#64b5f6] hover:bg-[#64b5f6]/30"
+              : "border-[#384252] bg-[#222832] text-[#e8ecf2] hover:border-[#64b5f6] hover:text-white",
           )}
         >
-          {active ? "RE-APPLY" : "APPLY"}
+          {active ? "Re-apply" : "Apply"}
         </button>
         <button
           type="button"
           onClick={onEdit}
           title="Edit profile parameters"
-          className="rounded border border-[#313a49] bg-[#1a202a] px-2 py-1 font-mono text-[10px] text-[#8d98a8] hover:border-[#424e63] hover:text-white"
+          className="rounded border border-[#384252] bg-[#222832] px-2 py-1 text-[11px] text-[#a0a9b6] hover:border-[#444f63] hover:text-[#e8ecf2]"
         >
-          EDIT
+          Edit
         </button>
         <button
           type="button"
           onClick={onDelete}
           disabled={!canDelete}
           title="Delete profile"
-          className="rounded border border-[#313a49] bg-[#1a202a] px-2 py-1 font-mono text-[10px] text-[#8d98a8] hover:border-red-400/50 hover:text-red-300 disabled:opacity-30"
+          className="rounded border border-[#384252] bg-[#222832] px-2 py-1 text-[11px] text-[#a0a9b6] hover:border-red-400/50 hover:text-red-300 disabled:opacity-30"
         >
           ✕
         </button>
@@ -137,28 +137,28 @@ function ProfileEditor({
   };
 
   const selectCls =
-    "rounded border border-[#2b3342] bg-[#11141a] px-2 py-1 font-mono text-[11px] text-[#e2e7ef] outline-none focus:border-blue-400";
+    "rounded border border-[#303744] bg-[#111318] px-2 py-1 font-mono text-[11px] text-[#e8ecf2] outline-none focus:border-[#64b5f6]";
 
   return (
-    <div className="mt-2.5 rounded-lg border border-[#313a49] bg-[#171c24] p-3.5">
+    <div className="mt-2.5 rounded-lg border border-[#384252] bg-[#191d24] p-3.5">
       <div className="flex items-center gap-2">
         <input
           name="profile-name"
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="Profile name (e.g. Competitive FPS)"
-          className="flex-1 rounded border border-[#2b3342] bg-[#11141a] px-2.5 py-1.5 font-mono text-[12px] text-[#e2e7ef] outline-none placeholder:text-[#556172] focus:border-blue-400"
+          className="flex-1 rounded border border-[#303744] bg-[#111318] px-2.5 py-1.5 text-[12px] text-[#e8ecf2] outline-none placeholder:text-[#727e90] focus:border-[#64b5f6]"
         />
         {profile.id && (
-          <span className="shrink-0 font-mono text-[10px] text-[#6d798a]">
+          <span className="shrink-0 font-mono text-[10px] text-[#727e90]">
             {profile.id}
           </span>
         )}
       </div>
 
       <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
-        <label className="flex items-center gap-1.5 font-mono text-[10px] tracking-wider text-[#7e8b9d]">
-          BUFFER
+        <label className="flex items-center gap-1.5 font-mono text-[11px] text-[#a0a9b6]">
+          Buffer
           <select
             name="profile-buffer"
             value={bufferSeconds}
@@ -173,7 +173,7 @@ function ProfileEditor({
           </select>
         </label>
 
-        <label className="flex items-center gap-1.5 font-mono text-[10px] tracking-wider text-[#7e8b9d]">
+        <label className="flex items-center gap-1.5 font-mono text-[11px] text-[#a0a9b6]">
           FPS
           <select
             name="profile-fps"
@@ -189,8 +189,8 @@ function ProfileEditor({
           </select>
         </label>
 
-        <label className="flex items-center gap-1.5 font-mono text-[10px] tracking-wider text-[#7e8b9d]">
-          CODEC
+        <label className="flex items-center gap-1.5 font-mono text-[11px] text-[#a0a9b6]">
+          Codec
           <select
             name="profile-codec"
             value={codec}
@@ -198,46 +198,49 @@ function ProfileEditor({
             className={selectCls}
           >
             <option value="h264" className="bg-[#111318]">H.264</option>
-            <option value="hevc" className="bg-[#111318]">HEVC</option>
+            <option value="hevc" className="bg-[#111318]">HEVC (H.265)</option>
           </select>
         </label>
 
-        <label className="flex items-center gap-2 font-mono text-[10px] tracking-wider text-[#7e8b9d]">
-          <span className="w-14">{(bitrateKbps / 1000).toFixed(0)} Mb/s</span>
-          <input
-            type="range"
-            className="cf-range w-28"
-            min={3000}
-            max={60000}
-            step={1000}
+        <label className="flex items-center gap-1.5 font-mono text-[11px] text-[#a0a9b6]">
+          Bitrate
+          <select
+            name="profile-bitrate"
             value={bitrateKbps}
             onChange={(e) => setBitrateKbps(Number(e.target.value))}
-          />
+            className={selectCls}
+          >
+            {[8_000, 12_000, 20_000, 30_000, 50_000].map((b) => (
+              <option key={b} value={b} className="bg-[#111318]">
+                {(b / 1000).toFixed(0)} Mb/s
+              </option>
+            ))}
+          </select>
         </label>
       </div>
 
-      <div className="mt-3.5 flex justify-end gap-2 border-t border-[#232934] pt-3">
+      <div className="mt-3.5 flex items-center justify-end gap-2 border-t border-[#303744] pt-2.5">
         <button
           type="button"
           onClick={onCancel}
-          className="rounded border border-[#2b3342] px-3 py-1 font-mono text-[11px] text-[#8692a3] hover:text-white"
+          className="rounded border border-[#384252] bg-[#222832] px-3 py-1 text-[11px] text-[#a0a9b6] hover:text-[#e8ecf2]"
         >
-          CANCEL
+          Cancel
         </button>
         <button
           type="button"
           onClick={save}
           disabled={!name.trim()}
-          className="rounded border border-blue-500 bg-blue-600 px-3 py-1 font-mono text-[11px] font-semibold text-white hover:bg-blue-500 disabled:opacity-40"
+          className="rounded border border-[#64b5f6] bg-[#64b5f6] px-3 py-1 text-[11px] font-medium text-[#0f172a] hover:bg-[#90caf9] disabled:opacity-40"
         >
-          SAVE PROFILE
+          Save Profile
         </button>
       </div>
     </div>
   );
 }
 
-/** One game→profile mapping row. Commits on blur / Enter / select change. */
+/** One exe -> profile mapping row in the auto-switch list. */
 function MapRow({
   entry,
   index,
@@ -248,40 +251,21 @@ function MapRow({
   entry: ProfileMapEntry;
   index: number;
   profiles: CaptureProfile[];
-  onChange: (index: number, patch: Partial<ProfileMapEntry>) => void;
+  onChange: (index: number, next: ProfileMapEntry) => void;
   onRemove: (index: number) => void;
 }) {
-  const [draft, setDraft] = useState(entry.exeName);
-  useEffect(() => setDraft(entry.exeName), [entry.exeName]);
-
-  const commitExe = () => {
-    const exe = draft.trim().toLowerCase();
-    if (!exe) return;
-    onChange(index, { exeName: exe });
-  };
-
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex items-center gap-2 rounded border border-[#303744] bg-[#191d24] p-2">
       <input
-        name="map-exe"
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={commitExe}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-        }}
-        placeholder="game.exe"
-        className="w-32 rounded border border-[#2b3342] bg-[#11141a] px-2.5 py-1.5 font-mono text-[11px] text-[#e2e7ef] outline-none placeholder:text-[#556172] focus:border-blue-400"
+        value={entry.exeName}
+        onChange={(e) => onChange(index, { ...entry, exeName: e.target.value })}
+        placeholder="executable.exe (e.g. valorant.exe)"
+        className="flex-1 rounded border border-[#303744] bg-[#111318] px-2 py-1 font-mono text-[11px] text-[#e8ecf2] outline-none placeholder:text-[#727e90] focus:border-[#64b5f6]"
       />
-      <span className="text-[#556172]">→</span>
       <select
-        name="map-profile"
         value={entry.profileId}
-        onChange={(e) => {
-          const exe = draft.trim().toLowerCase();
-          onChange(index, { profileId: e.target.value, ...(exe ? { exeName: exe } : {}) });
-        }}
-        className="min-w-0 flex-1 rounded border border-[#2b3342] bg-[#11141a] px-2.5 py-1.5 font-mono text-[11px] text-[#e2e7ef] outline-none focus:border-blue-400"
+        onChange={(e) => onChange(index, { ...entry, profileId: e.target.value })}
+        className="rounded border border-[#303744] bg-[#111318] px-2 py-1 text-[11px] text-[#e8ecf2] outline-none focus:border-[#64b5f6]"
       >
         {profiles.map((p) => (
           <option key={p.id} value={p.id} className="bg-[#111318]">
@@ -293,7 +277,7 @@ function MapRow({
         type="button"
         onClick={() => onRemove(index)}
         title="Remove mapping"
-        className="rounded border border-[#2b3342] bg-[#1a202a] px-2 py-1.5 font-mono text-[11px] text-[#8692a3] hover:border-red-400/50 hover:text-red-300"
+        className="rounded border border-[#384252] bg-[#222832] px-2 py-1 text-[11px] text-[#a0a9b6] hover:border-red-400 hover:text-red-300"
       >
         ✕
       </button>
@@ -314,36 +298,43 @@ export default function ProfilesPanel({
 }: Props) {
   const [editing, setEditing] = useState<CaptureProfile | null>(null);
 
-  const commitMap = (index: number, patch: Partial<ProfileMapEntry>) => {
-    const map = settings.profileMap.map((m, i) => (i === index ? { ...m, ...patch } : m));
-    onSetProfileMap(map);
-  };
-  const removeMapRow = (index: number) => {
-    onSetProfileMap(settings.profileMap.filter((_, i) => i !== index));
-  };
   const addMapRow = () => {
-    const firstId = settings.profiles[0]?.id ?? "default";
-    onSetProfileMap([...settings.profileMap, { profileId: firstId, exeName: "" }]);
+    const firstProfileId = settings.profiles[0]?.id ?? "default";
+    const next = [...settings.profileMap, { exeName: "", profileId: firstProfileId }];
+    onSetProfileMap(next);
+  };
+
+  const removeMapRow = (index: number) => {
+    const next = settings.profileMap.filter((_, i) => i !== index);
+    onSetProfileMap(next);
+  };
+
+  const commitMap = (index: number, entry: ProfileMapEntry) => {
+    const next = [...settings.profileMap];
+    next[index] = entry;
+    onSetProfileMap(next);
   };
 
   return (
-    <section className="panel rounded-xl p-4">
-      <h3 className="font-mono text-[11px] font-semibold tracking-wider text-[#9aa5b5]">
-        CAPTURE PROFILES
-      </h3>
-      <p className="mt-1 text-[12px] leading-relaxed text-[#7e8b9d]">
-        Configure presets for different games. Changes to buffer size apply live; frame rate,
-        bitrate, and codec apply on the next engine start.
-      </p>
+    <section className="panel rounded-xl p-5 space-y-4">
+      <div className="border-b border-[#303744] pb-3">
+        <h3 className="text-[13px] font-semibold text-[#e8ecf2]">
+          Game Profiles
+        </h3>
+        <p className="text-[11px] text-[#a0a9b6] mt-0.5">
+          Tune buffer duration, FPS, and bitrate presets per game with automatic switching
+        </p>
+      </div>
 
-      <div className="mt-3 border-t border-[#232934]">
+      <div className="space-y-1">
         <Row
           label="Auto-switch by focused game"
-          hint="Automatically applies the mapped preset when a matching game is detected."
+          hint="Automatically apply mapped profile preset when a game window is focused"
         >
           <Toggle
             on={settings.autoSwitchProfiles}
             onClick={() => onChange({ autoSwitchProfiles: !settings.autoSwitchProfiles })}
+            label="Auto-switch profiles"
           />
         </Row>
 
@@ -352,16 +343,16 @@ export default function ProfilesPanel({
           hint={foreground ? foreground.title : "Desktop or unmapped window"}
         >
           <div className="flex items-center gap-2">
-            <span className="rounded border border-[#2f3846] bg-[#14171e] px-2 py-1 font-mono text-[11px] text-[#c3cddb]">
+            <span className="rounded border border-[#384252] bg-[#191d24] px-2 py-1 font-mono text-[11px] text-[#e8ecf2]">
               {foreground ? foreground.exe : "—"}
             </span>
             <button
               type="button"
               onClick={onRefreshForeground}
               title="Re-check the focused window now"
-              className="rounded border border-[#2f3846] bg-[#14171e] px-2 py-1 font-mono text-[10px] text-[#8692a3] hover:text-white"
+              className="rounded border border-[#384252] bg-[#222832] px-2 py-1 text-[11px] text-[#a0a9b6] hover:text-[#e8ecf2]"
             >
-              DETECT
+              Detect
             </button>
           </div>
         </Row>
@@ -404,17 +395,17 @@ export default function ProfilesPanel({
             codec: "h264",
           })
         }
-        className="mt-3 w-full rounded-lg border border-[#2f3846] bg-[#14171e] px-3 py-2 font-mono text-[11px] font-medium tracking-wider text-[#c3cddb] transition-colors hover:border-blue-400/50 hover:bg-[#1a202a] hover:text-white"
+        className="w-full rounded-lg border border-[#384252] bg-[#222832] px-3 py-2 text-[12px] font-medium text-[#e8ecf2] transition-colors hover:border-[#64b5f6]/50 hover:bg-[#2a3340]"
       >
-        + NEW PRESET
+        + New Preset
       </button>
 
-      <div className="mt-5 border-t border-[#232934] pt-3.5">
-        <div className="font-mono text-[10px] font-medium uppercase tracking-wider text-[#7e8b9d]">
-          GAME DETECTION MAPPINGS
+      <div className="mt-5 border-t border-[#303744] pt-3.5">
+        <div className="text-[11px] font-semibold tracking-wide text-[#a0a9b6]">
+          Game Detection Mappings
         </div>
-        <p className="mt-1 text-[11px] leading-relaxed text-[#717d8e]">
-          Map an executable file name (e.g. <span className="font-mono text-[#b5c0d0]">cs2.exe</span>) to
+        <p className="mt-1 text-[11px] leading-relaxed text-[#727e90]">
+          Map an executable file name (e.g. <span className="font-mono text-[#e8ecf2]">valorant.exe</span>) to
           a profile preset.
         </p>
 
@@ -432,9 +423,9 @@ export default function ProfilesPanel({
           <button
             type="button"
             onClick={addMapRow}
-            className="w-full rounded border border-[#28313e] bg-[#14171e] px-3 py-1.5 font-mono text-[11px] text-[#8692a3] hover:border-[#384457] hover:text-white"
+            className="w-full rounded border border-[#303744] bg-[#191d24] px-3 py-1.5 text-[11px] text-[#a0a9b6] hover:border-[#384252] hover:text-[#e8ecf2]"
           >
-            + ADD GAME MAPPING
+            + Add Game Mapping
           </button>
         </div>
       </div>

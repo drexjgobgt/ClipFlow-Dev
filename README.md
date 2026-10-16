@@ -1,17 +1,8 @@
 # ClipFlow
 
-<p align="center">
-  <strong>Ultra-Lightweight Instant Replay & Game Clipping Engine for Windows 10/11</strong>
-</p>
+ClipFlow is an instant replay and gameplay recording utility for Windows 10 and 11. It records your active display into a rolling memory buffer and saves the last 15 to 120 seconds of gameplay to disk with a single hotkey press.
 
-<p align="center">
-  <a href="https://buymeacoffee.com/jaimitus">
-    <img src="https://img.shields.io/badge/Buy%20Me%20A%20Coffee-Donate-orange.svg?style=for-the-badge&logo=buy-me-a-coffee" alt="Buy Me A Coffee" />
-  </a>
-  <img src="https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011-blue?style=for-the-badge&logo=windows" alt="Windows 10/11" />
-  <img src="https://img.shields.io/badge/Built%20With-Rust%20%2B%20Tauri%20v2-orange?style=for-the-badge&logo=rust" alt="Rust + Tauri v2" />
-  <img src="https://img.shields.io/badge/License-MIT-brightgreen?style=for-the-badge" alt="MIT License" />
-</p>
+Built with Rust and Tauri v2, ClipFlow uses native Direct3D 11 desktop duplication and Windows Media Foundation hardware encoders to keep CPU and memory overhead low during gaming sessions.
 
 ---
 
@@ -19,114 +10,102 @@
 
 ---
 
-## ⚡ Overview
+## How It Works
 
-**ClipFlow** is a zero-bloat, high-performance Instant Replay and Game Clipping desktop app for Windows 10 and 11. 
-
-Designed for gamers and creators who demand maximum FPS and instant clipping without background resource hogging, ClipFlow continuously records your active display into a rolling memory buffer directly on your GPU. Pressing `Alt + C` instantly flushes your buffer to an MP4 video file in **under 50 milliseconds**.
-
-> ### 🆕 What's new in **1.4.2**
-> - 🎙️ **Microphone device selection & audio sync** — select your preferred microphone device directly from Settings, with guaranteed monotonic audio/video PTS synchronization, silence injection, and crash-resilient capture streams.
-> - 🖥️ **The overlay is a control panel** — always on top of games, **draggable** with a **persisted position**, and packed with controls: **⎙ SAVE** and **▶ ARM / ■ STOP** without alt-tabbing, plus live buffered/total, resolution@fps, bitrate and a 🔒 PRIV chip.
-> - 🎞️ **GIF quality overhaul** — per-frame 256-colour palettes: GIFs keep their colours and lose the dithering dots.
-> - 🌿 **ECO simulation removed** — the live battery/RAM telemetry stays in Settings.
-> - Everything from 1.4.1/1.3.1: 🎞️ GIF export, 🌿 adaptive ECO capture, ⚡ instant gallery at thousands of clips (probe cache + lazy thumbnails + LOAD MORE/infinite scroll), 📦 batch library management, ⚡ virtualised gallery + scroll/view persistence, 🛡️ privacy mode, 🎚️ game/mic mix, ⭐ favourites + tags, CI gates, and from 1.2.0: game-tagged clips & per-game folders, STATS tab, REC HUD, auto-save on game exit, per-game profiles, signed auto-updates, HEVC.
->
-> Full list in [CHANGELOG.md](CHANGELOG.md).
+1. **Circular Replay Buffer**: Gameplay frames are encoded directly on your GPU and stored in a rolling RAM ring buffer. No intermediate video files are written while you play.
+2. **Instant Clip Flush**: Pressing `Alt + C` packages the cached frames into a standard MP4 file in `%USERPROFILE%\Videos\ClipFlow` without interrupting your game or stealing window focus.
+3. **Synchronized Audio Capture**: Dual WASAPI streams capture game audio and microphone input with monotonic timestamp synchronization, silence injection, and automatic device-loss recovery.
 
 ---
 
-## ✨ Key Features
+## Core Features
 
-- **⚡ Sub-50ms Instant Clip Flush:** Snapshot your last 30–120 seconds of gameplay to `%USERPROFILE%\Videos\ClipFlow` in under 50 ms. Zero rendering queues or waiting.
-- **🎮 Per-Game Capture Profiles:** Define a few generic presets (Default / Competitivo / Cine) and map foreground games to them — `cs2.exe` → *Competitivo*, `eldenring.exe` → *Cine*, everything else falls back to *Default*. Auto-switch on focus change, buffer applies live, the rest on engine restart.
-- **🏷️ Game-Tagged Clips & Folders:** Every save is tagged with the game in the foreground and (optionally) routed into `Videos/ClipFlow/<game>/`. Filter the gallery by game, read per-game stats in the STATS tab, and auto-save the last 30 s whenever a game exits focus.
-- **🖥️ On-Screen REC HUD:** While the buffer is armed, a click-through always-on-top indicator (● REC · elapsed) stays pinned to the corner of your screen — no alt-tabbing to check the deck.
-- **✂️ Split at Playhead:** The trimmer can cut a clip in two at any frame with a single click (two lossless stream-copy trims).
-- **🔇 Game-Focus Friendly:** Saving with `Alt + C` never steals focus from a fullscreen game — the window stays put and you get a native toast instead. Audio capture retries automatically when a game holds the device in exclusive mode, so clips never come out silent.
-- **⌨️ Fully Customisable Hotkeys:** Rebind save and arm/disarm from the UI — click, press, done. Persisted in one JSON file.
-- **🎞️ H.264 or HEVC (H.265):** Pick your codec; HEVC cuts storage in half while staying fully hardware-accelerated.
-- **🖥️ DXGI Desktop Duplication & Direct3D 11:** Zero-copy GPU surface acquisition at 60–144 FPS with sub-millisecond frame latency.
-- **🎯 Native Hardware Encoding MFT:** Leverages Media Foundation hardware encoders (NVIDIA NVENC, AMD AMF, Intel QSV) for near-zero CPU usage.
-- **🎙️ Synchronized WASAPI Audio Loopback & Mic Selection:** Dual capture for system output audio and microphone, selectable audio input devices in Settings, encoded to AAC-LC at 48 kHz stereo on a unified QPC clock with monotonic sync.
-- **✂️ Keyframe Stream-Copy Trimmer:** Trim your clips instantly without re-encoding, preserving 100% video quality with zero export delay.
-- **🛡️ 100% Private & Zero Telemetry:** No user account, no login, no cloud upload, no telemetry sockets, and no background updater service. The only network call is a version probe against GitHub Releases (silent at launch, or on demand from Settings) — no analytics, no tracking.
-- **🔄 Signed Auto-Updates via GitHub Releases:** Updates are delivered through the Releases page (`latest.json` + `.sig`), checked from Settings → About & Updates and installed in one click. You stay in control — no background updater.
-- **💧 Ultra-Low Memory Footprint:** Keeps encoded packets in a circular RAM buffer (<100 MB RAM usage for 60 s history).
-- **🔄 Resilient GPU Recovery:** Automatically detects resolution switches, UAC prompts, or driver TDR resets (`DXGI_ERROR_DEVICE_RESET`) and re-arms Desktop Duplication seamlessly.
+- **Instant Replay**: Keep 15, 30, 60, or 120 seconds of recent gameplay ready to save at any time.
+- **Hardware-Accelerated Encoding**: Supports H.264 and HEVC (H.265) through NVIDIA NVENC, AMD AMF, and Intel QuickSync.
+- **Lossless Clip Trimming**: Cut start and end points using keyframe stream-copy to export clips without re-encoding.
+- **Split at Playhead**: Split a recorded clip into two separate files with one click.
+- **Per-Game Capture Profiles**: Assign resolution, frame rate, and bitrate presets to specific game executables with automatic foreground detection.
+- **Game Tagging & Folders**: Clips are automatically labeled with the active game title and can be sorted into dedicated subdirectories.
+- **Clip Library**: Browse recordings with inline hover previews, audio presence badges, tag filtering, and batch management.
+- **On-Screen Recording HUD**: Optional lightweight, click-through overlay showing recording status and buffer elapsed time.
+- **Privacy Gate**: Automatically pauses recording when sensitive applications, password prompts, or UAC elevation dialogues appear.
+- **GIF Export**: Export short highlights directly to animated GIF with per-frame palette generation.
+- **Zero Telemetry**: No accounts, no background tracking services, and no cloud uploads. All video and metadata remain on your local machine.
 
 ---
 
-## ⚔️ Why ClipFlow? (Feature Comparison)
+## Default Keyboard Shortcuts
 
-ClipFlow was built to eliminate the bloat, mandatory accounts, and high RAM overhead common in modern clipping apps.
+| Shortcut | Action | Description |
+| :--- | :--- | :--- |
+| `Alt + C` | **Save Replay** | Writes the current rolling buffer to an MP4 clip on disk |
+| `Alt + Shift + C` | **Arm / Disarm** | Starts or pauses the background recording buffer |
 
-| Feature | ⚡ **ClipFlow** | NVIDIA ShadowPlay | Medal.tv | Outplayed / Overwolf | SteelSeries GG | OBS Replay Buffer |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Mandatory Account / Login** | ❌ **None (0%)** | ⚠️ Required | ⚠️ Required | ⚠️ Required | ⚠️ Required | ❌ None |
-| **RAM Footprint** | ⚡ **< 100 MB** | 🟡 300–600 MB | 🔴 800 MB–1.5 GB | 🔴 1.0–2.0 GB | 🔴 700 MB–1.2 GB | 🟡 400–800 MB |
-| **Telemetry / Tracking** | ❌ **Zero** | ⚠️ Yes | ⚠️ Yes | ⚠️ Yes | ⚠️ Yes | ❌ None |
-| **Flush Latency (`Alt + C`)** | ⚡ **< 50 ms** | 🟡 ~500 ms | 🔴 2–5 seconds | 🔴 3–10 seconds | 🔴 2–5 seconds | 🟡 ~300 ms |
-| **Lossless Stream-Copy Trim** | ✅ **Built-in** | ❌ Separate tool | 🟡 Re-encodes | 🟡 Re-encodes | 🟡 Re-encodes | ❌ None |
-| **Single Portable Binary** | ✅ **Yes (.exe)** | ❌ GeForce Exp. | ❌ Heavy Installer | ❌ Overwolf App | ❌ Huge Suite | ❌ Installer |
-| **Background Updater Service** | ❌ **None** | ⚠️ Yes | ⚠️ Yes | ⚠️ Yes | ⚠️ Yes | ❌ None |
+Hotkeys can be customized at any time in **Settings → Keyboard Shortcuts**.
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
-### 1. Download & Run
-Choose your preferred flavor from the [Latest Releases](https://github.com/drexjgobgt/ClipFlow-Dev/releases/latest) page (or view [all releases](https://github.com/drexjgobgt/ClipFlow-Dev/releases)):
-- **Standalone Portable:** [`ClipFlow_v1.4.2_Portable.exe`](https://github.com/drexjgobgt/ClipFlow-Dev/releases/latest) (Single executable, no installation needed)
-- **Setup Installer:** [`ClipFlow_1.4.2_x64-setup.exe`](https://github.com/drexjgobgt/ClipFlow-Dev/releases/latest) (NSIS Installer)
-- **MSI Package:** [`ClipFlow_1.4.2_x64_en-US.msi`](https://github.com/drexjgobgt/ClipFlow-Dev/releases/latest) (Windows Installer)
+### 1. Download
 
-> 💡 Install with the **NSIS setup** (or MSI) to get **automatic updates** — the portable exe does not self-update.
+Download the latest version from the [Releases](https://github.com/drexjgobgt/ClipFlow-Dev/releases) page:
 
-### 2. Basic Controls
-- `Alt + C`: **Save Instant Replay** (Flushes your active rolling buffer to disk).
-- `Alt + Shift + C`: **Arm / Disarm Buffer** (Toggles active GPU recording).
-- Both hotkeys are **customisable** — Settings → click the badge → press your combo.
-- **Updates:** Settings → About & Updates → `CHECK UPDATE` downloads and installs the newest signed release automatically.
+- **Installer (`.exe` / `.msi`)**: Standard Windows installer with desktop shortcuts and automatic update support.
+- **Portable (`.exe`)**: Self-contained executable requiring no installation.
 
-Saved clips are stored in `%USERPROFILE%\Videos\ClipFlow`. PNG snapshots land in the same folder.
+### 2. First Run
+
+1. Launch ClipFlow. The status bar will indicate **Ready to record** or **Recording buffer active**.
+2. Start your game.
+3. When something memorable happens, press `Alt + C`. A system notification will confirm the saved clip.
+4. Access your recordings in the **Clips** tab or directly in `%USERPROFILE%\Videos\ClipFlow`.
 
 ---
 
-## 🛠️ Building from Source
+## System Requirements
+
+- **Operating System**: Windows 10 (version 1809 or newer) or Windows 11 (64-bit).
+- **Graphics Card**: DirectX 11.1 compatible GPU with hardware encoding support:
+  - NVIDIA GeForce GTX 600 series or newer (NVENC)
+  - AMD Radeon HD 7000 series or newer (AMF)
+  - Intel HD Graphics 4200 or newer (QuickSync)
+- **Memory**: Minimum 4 GB RAM (the circular buffer typically consumes 80–120 MB for a 60-second 1080p replay).
+- **Storage**: Fast storage (SSD recommended) for saving MP4 clips.
+
+---
+
+## Building from Source
 
 ### Prerequisites
-- [Rust](https://www.rust-lang.org/tools/install) (1.75+)
-- [Node.js](https://nodejs.org/) (v18+)
-- C++ Build Tools for Visual Studio (Windows 10/11 SDK)
 
-### Build Instructions
+- [Rust](https://www.rust-lang.org/tools/install) (1.75 or later)
+- [Node.js](https://nodejs.org/) (v18 or later)
+- Visual Studio C++ Build Tools with the Windows 10/11 SDK
+
+### Build Steps
 
 ```powershell
-# Clone repository
+# Clone the repository
 git clone https://github.com/drexjgobgt/ClipFlow-Dev.git
 cd ClipFlow
 
 # Install frontend dependencies
 npm install
 
-# Build frontend production assets
-npm run build
+# Run the development environment
+npm run tauri dev
 
-# Build production binary & installers
-npx @tauri-apps/cli build
+# Build production executable and installer
+npm run tauri build
 ```
 
-The compiled binary and installers will be generated under `src-tauri/target/release/bundle/`.
+Compiled application binaries and installer bundles are generated in `src-tauri/target/release/bundle/`.
 
 ---
 
-## 📄 License
+## License
 
 This project is licensed under the [MIT License](LICENSE).
 
----
-
-<p align="center">
-  Maintained with ❤️ by <a href="https://github.com/drexjgobgt">drexjgobgt</a> · Originally developed by <a href="https://github.com/jaimitus">jaimitus</a>. If you find ClipFlow useful, consider <a href="https://buymeacoffee.com/jaimitus">supporting the project</a>!
-</p>
+Maintained by [drexjgobgt](https://github.com/drexjgobgt). Originally developed by [jaimitus](https://github.com/jaimitus).

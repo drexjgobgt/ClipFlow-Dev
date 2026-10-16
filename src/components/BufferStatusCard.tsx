@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { EngineStats } from "../lib/types";
 import { VENDOR_LABEL } from "../lib/types";
 import { formatBytes, formatDuration } from "../lib/format";
@@ -8,56 +8,18 @@ interface Props {
   stats: EngineStats;
   hotkey: string;
   busy?: boolean;
-  /** Adaptive capture (ECO) status, when active. */
   eco?: { active: boolean; reason: "battery" | "ram" | "off" } | null;
   onToggle: () => void;
   onSave: () => void;
+  onSelectDuration?: (seconds: number) => void;
+  onOpenSettings?: () => void;
 }
 
-const STATE_META: Record<
-  EngineStats["state"],
-  { label: string; tone: string; dot: string; desc: string }
-> = {
-  idle: {
-    label: "BUFFER DISARMED",
-    tone: "text-[#8d98a8]",
-    dot: "bg-[#556172]",
-    desc: "Memory ring buffer is inactive. Arm to start continuous replay capture.",
-  },
-  starting: {
-    label: "STARTING ENGINE",
-    tone: "text-blue-400",
-    dot: "bg-blue-400 animate-rec",
-    desc: "Allocating D3D11 staging textures and spinning up hardware encoder.",
-  },
-  buffering: {
-    label: "BUFFER RECORDING",
-    tone: "text-emerald-400",
-    dot: "bg-emerald-400",
-    desc: "Continuously encoding display frames to rolling memory buffer.",
-  },
-  flushing: {
-    label: "SAVING CLIP TO MP4",
-    tone: "text-amber-300",
-    dot: "bg-amber-400 animate-rec",
-    desc: "Muxing cached keyframes straight to output folder.",
-  },
-  recovering: {
-    label: "GPU RECOVERY IN PROGRESS",
-    tone: "text-amber-300",
-    dot: "bg-amber-400 animate-rec",
-    desc: "DXGI access lost. Reinitializing D3D11 swapchain without crash.",
-  },
-  error: {
-    label: "ENGINE FAULT",
-    tone: "text-red-400",
-    dot: "bg-red-400",
-    desc: "Capture pipeline failed. Check device status in Settings.",
-  },
-};
+/** Pre-set instant replay durations commonly used in gaming */
+const REPLAY_DURATIONS = [15, 30, 60, 120];
 
-/** Minimalist, crisp sparkline of per-frame encode cost. */
-function EncodeSparkline({ value }: { value: number }) {
+/** Minimalist sparkline showing per-frame hardware encode latency */
+function LatencySparkline({ value }: { value: number }) {
   const ref = useRef<HTMLCanvasElement | null>(null);
   const history = useRef<number[]>([]);
 
@@ -68,7 +30,7 @@ function EncodeSparkline({ value }: { value: number }) {
     if (!ctx) return;
 
     history.current.push(value);
-    if (history.current.length > 72) history.current.shift();
+    if (history.current.length > 60) history.current.shift();
 
     const dpr = window.devicePixelRatio || 1;
     const w = canvas.clientWidth;
@@ -79,7 +41,7 @@ function EncodeSparkline({ value }: { value: number }) {
     ctx.clearRect(0, 0, w, h);
 
     const data = history.current;
-    const max = Math.max(3.0, ...data) * 1.15;
+    const max = Math.max(2.5, ...data) * 1.2;
 
     ctx.beginPath();
     data.forEach((v, i) => {
@@ -88,7 +50,7 @@ function EncodeSparkline({ value }: { value: number }) {
       if (i === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     });
-    ctx.strokeStyle = "#38bdf8";
+    ctx.strokeStyle = "#64b5f6";
     ctx.lineWidth = 1.5;
     ctx.stroke();
 
@@ -96,276 +58,470 @@ function EncodeSparkline({ value }: { value: number }) {
     ctx.lineTo(0, h);
     ctx.closePath();
     const grad = ctx.createLinearGradient(0, 0, 0, h);
-    grad.addColorStop(0, "rgba(56, 189, 248, 0.18)");
-    grad.addColorStop(1, "rgba(56, 189, 248, 0.0)");
+    grad.addColorStop(0, "rgba(100, 181, 246, 0.16)");
+    grad.addColorStop(1, "rgba(100, 181, 246, 0.0)");
     ctx.fillStyle = grad;
     ctx.fill();
   }, [value]);
 
-  return <canvas ref={ref} className="h-8 w-full" aria-label="Encode latency sparkline" />;
+  return <canvas ref={ref} className="h-7 w-full" aria-label="Encode latency graph" />;
 }
 
-function Metric({
-  label,
-  value,
-  sub,
-  highlight,
-}: {
-  label: string;
-  value: string;
-  sub?: string;
-  highlight?: boolean;
-}) {
-  return (
-    <div className="rounded-lg border border-[#232934] bg-[#14171e] px-3 py-2.5">
-      <div className="font-mono text-[10px] font-medium uppercase tracking-wider text-[#7e8b9d]">
-        {label}
-      </div>
-      <div
-        className={cn(
-          "mt-1 font-mono text-[16px] font-semibold leading-none",
-          highlight ? "text-amber-400" : "text-[#e6eaf0]",
-        )}
-      >
-        {value}
-      </div>
-      {sub && <div className="mt-1 text-[11px] text-[#717d8e]">{sub}</div>}
-    </div>
-  );
-}
-
-export default function BufferStatusCard({ stats, hotkey, busy, eco, onToggle, onSave }: Props) {
-  const meta = STATE_META[stats.state];
+export default function BufferStatusCard({
+  stats,
+  hotkey,
+  busy,
+  eco,
+  onToggle,
+  onSave,
+  onSelectDuration,
+  onOpenSettings,
+}: Props) {
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
   const armed = stats.state === "buffering" || stats.state === "flushing";
 
-  const fill = useMemo(
-    () => Math.min(1, stats.buffered_seconds / Math.max(stats.buffer_seconds, 1)),
-    [stats.buffered_seconds, stats.buffer_seconds],
-  );
+  // Friendly plain-language recording state
+  const statusConfig = useMemo(() => {
+    if (stats.privacy_active) {
+      return {
+        badge: "Recording paused",
+        tone: "text-amber-400 border-amber-500/30 bg-amber-500/10",
+        dot: "bg-amber-400",
+        summary: "Privacy mode active — capture paused while desktop or browser is focused.",
+        actionReady: false,
+      };
+    }
+    switch (stats.state) {
+      case "buffering":
+        return {
+          badge: "Recording buffer active",
+          tone: "text-emerald-400 border-emerald-500/30 bg-emerald-500/10",
+          dot: "bg-emerald-400",
+          summary: "Continuously caching recent gameplay into memory. Press hotkey to save.",
+          actionReady: true,
+        };
+      case "flushing":
+        return {
+          badge: "Saving clip to disk…",
+          tone: "text-blue-300 border-blue-400/30 bg-blue-500/10",
+          dot: "bg-blue-400 animate-rec",
+          summary: "Packaging replay buffer into an MP4 video file in under 50 ms.",
+          actionReady: false,
+        };
+      case "starting":
+        return {
+          badge: "Initializing recorder…",
+          tone: "text-blue-300 border-blue-400/30 bg-blue-500/10",
+          dot: "bg-blue-400 animate-rec",
+          summary: "Connecting to D3D11 display duplication and spinning up hardware encoder.",
+          actionReady: false,
+        };
+      case "recovering":
+        return {
+          badge: "Reconnecting capture…",
+          tone: "text-amber-300 border-amber-500/30 bg-amber-500/10",
+          dot: "bg-amber-400 animate-rec",
+          summary: "Display resolution changed or GPU reset. Re-establishing capture stream.",
+          actionReady: false,
+        };
+      case "error":
+        return {
+          badge: "Recording unavailable",
+          tone: "text-red-300 border-red-500/30 bg-red-500/10",
+          dot: "bg-red-400",
+          summary: stats.last_error ?? "Capture pipeline encountered an error. Check settings.",
+          actionReady: false,
+        };
+      case "idle":
+      default:
+        return {
+          badge: "Ready to record",
+          tone: "text-[#a0a9b6] border-[#303744] bg-[#191d24]",
+          dot: "bg-[#727e90]",
+          summary: "Replay buffer is on standby. Arm the buffer to start capturing gameplay.",
+          actionReady: false,
+        };
+    }
+  }, [stats.state, stats.privacy_active, stats.last_error]);
 
-  const radius = 60;
-  const circumference = 2 * Math.PI * radius;
+  // Audio health status calculations
+  const audioInfo = useMemo(() => {
+    const rawErr = stats.audio_error?.toLowerCase() ?? "";
+    const isMicError = rawErr.includes("microphone") || rawErr.includes("mic");
+    const isSysError = rawErr.includes("loopback") || rawErr.includes("system") || rawErr.includes("render");
+    const isGeneralErr = Boolean(stats.audio_error && !isMicError && !isSysError);
+
+    const gameAudio = !stats.audio_system
+      ? {
+          status: "Disabled",
+          tone: "text-[#a0a9b6] bg-[#222832] border-[#303744]",
+          dot: "bg-[#727e90]",
+          message: "Game audio capture is turned off in settings.",
+          isError: false,
+        }
+      : stats.audio_error && (isSysError || isGeneralErr)
+        ? {
+            status: "Device unavailable",
+            tone: "text-red-300 bg-red-500/10 border-red-500/30",
+            dot: "bg-red-400",
+            message: stats.audio_error,
+            isError: true,
+          }
+        : armed
+          ? {
+              status: "Capturing game audio",
+              tone: "text-emerald-400 bg-emerald-500/10 border-emerald-500/30",
+              dot: "bg-emerald-400",
+              message: "48 kHz stereo loopback recording cleanly.",
+              isError: false,
+            }
+          : {
+              status: "Ready on standby",
+              tone: "text-[#a0a9b6] bg-[#222832] border-[#303744]",
+              dot: "bg-emerald-500/70",
+              message: "Will capture game audio once buffer is armed.",
+              isError: false,
+            };
+
+    const microphone = !stats.audio_mic
+      ? {
+          status: "Disabled",
+          tone: "text-[#a0a9b6] bg-[#222832] border-[#303744]",
+          dot: "bg-[#727e90]",
+          message: "Microphone recording is turned off in settings.",
+          isError: false,
+        }
+      : stats.audio_error && (isMicError || isGeneralErr)
+        ? {
+            status: "Microphone unavailable",
+            tone: "text-amber-300 bg-amber-500/10 border-amber-500/30",
+            dot: "bg-amber-400",
+            message: stats.audio_error,
+            isError: true,
+          }
+        : armed
+          ? {
+              status: "Microphone active",
+              tone: "text-emerald-400 bg-emerald-500/10 border-emerald-500/30",
+              dot: "bg-emerald-400",
+              message: "Voice commentary mixed directly into clip.",
+              isError: false,
+            }
+          : {
+              status: "Ready on standby",
+              tone: "text-[#a0a9b6] bg-[#222832] border-[#303744]",
+              dot: "bg-emerald-500/70",
+              message: "Will record voice once buffer is armed.",
+              isError: false,
+            };
+
+    return { gameAudio, microphone };
+  }, [stats.audio_system, stats.audio_mic, stats.audio_error, armed]);
+
+  // Buffer fill fraction
+  const fillPercent = useMemo(() => {
+    if (!stats.buffer_seconds || stats.buffer_seconds <= 0) return 0;
+    return Math.min(100, Math.round((stats.buffered_seconds / stats.buffer_seconds) * 100));
+  }, [stats.buffered_seconds, stats.buffer_seconds]);
 
   return (
-    <section className="panel rounded-xl p-5">
-      {/* Header with primary status and action controls */}
-      <header className="flex flex-wrap items-center justify-between gap-4 border-b border-[#232934] pb-4">
-        <div className="flex items-center gap-3">
-          <span className={cn("h-3 w-3 rounded-full shrink-0", meta.dot)} />
+    <section className="panel rounded-xl p-5 space-y-5">
+      {/* ------------------------------------------------ Top: Recording Status Banner */}
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#303744] pb-4">
+        <div className="flex items-start gap-3">
+          <span className={cn("mt-1.5 h-3 w-3 shrink-0 rounded-full", statusConfig.dot)} />
           <div>
-            <div className="flex items-center gap-2.5">
-              <span className={cn("font-mono text-[13px] font-semibold tracking-wider", meta.tone)}>
-                {meta.label}
+            <div className="flex flex-wrap items-center gap-2.5">
+              <span className={cn("rounded-full border px-3 py-0.5 text-[12px] font-semibold tracking-wide", statusConfig.tone)}>
+                {statusConfig.badge}
               </span>
+
               {eco?.active && (
-                <span
-                  title="Adaptive capture active: rolling buffer size is scaled down to conserve resources."
-                  className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 font-mono text-[10px] font-medium text-amber-300"
-                >
-                  ECO ({eco.reason === "battery" ? "BATTERY" : "RAM"})
+                <span className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 font-mono text-[10px] text-amber-300">
+                  ECO Mode ({eco.reason === "battery" ? "Battery" : "RAM saver"})
                 </span>
               )}
             </div>
-            {stats.privacy_active ? (
-              <div className="mt-0.5 font-mono text-[11px] text-amber-400">
-                Privacy paused: desktop focused, buffer empty
-              </div>
-            ) : (
-              <div className="mt-0.5 font-mono text-[11px] text-[#8692a3]">
-                {stats.width > 0 ? `${stats.width}×${stats.height}` : "Display ready"} ·{" "}
-                {stats.target_fps} fps target · {stats.capture_fps.toFixed(0)} fps live
-              </div>
-            )}
-          </div>
-        </div>
 
-        <div className="flex items-center gap-2.5">
-          <button
-            type="button"
-            onClick={onToggle}
-            disabled={busy}
-            className={cn(
-              "rounded-lg border px-3.5 py-2 font-mono text-[11px] font-semibold tracking-wider transition-colors duration-150",
-              armed
-                ? "border-[#3b4556] bg-[#1a202a] text-[#d4dae3] hover:border-red-500/50 hover:bg-red-500/10 hover:text-red-300"
-                : "border-blue-500/40 bg-blue-500/10 text-blue-300 hover:border-blue-400 hover:bg-blue-500/20",
-              busy && "cursor-wait opacity-60",
-            )}
-          >
-            {armed ? "DISARM BUFFER" : "ARM BUFFER"}
-          </button>
+            <p className="mt-1 text-[13px] text-[#a0a9b6]">
+              {statusConfig.summary}
+            </p>
 
-          <button
-            type="button"
-            onClick={onSave}
-            disabled={!armed || busy}
-            className={cn(
-              "flex items-center gap-2 rounded-lg border px-4 py-2 font-mono text-[11px] font-semibold tracking-wider transition-colors duration-150",
-              armed && !busy
-                ? "border-blue-500 bg-blue-600 text-white shadow-sm hover:bg-blue-500 hover:border-blue-400 active:bg-blue-700"
-                : "cursor-not-allowed border-[#28303d] bg-[#14171e] text-[#556172]",
-            )}
-          >
-            <span>SAVE CLIP</span>
-            <kbd className="rounded border border-white/20 bg-black/30 px-1.5 py-0.5 font-mono text-[10px] text-white/90">
-              {hotkey.toUpperCase()}
-            </kbd>
-          </button>
-        </div>
-      </header>
-
-      {/* Main card body: Circular progress dial on left, telemetry and hardware on right */}
-      <div className="mt-5 grid gap-5 lg:grid-cols-[164px_1fr]">
-        {/* Rolling buffer circular dial */}
-        <div className="flex flex-col items-center justify-center rounded-lg border border-[#232934] bg-[#14171e] p-3 text-center">
-          <div className="relative grid h-[132px] w-[132px] place-items-center">
-            <svg className="absolute inset-0 -rotate-90" viewBox="0 0 140 140" aria-hidden="true">
-              <circle
-                cx="70"
-                cy="70"
-                r={radius}
-                fill="none"
-                stroke="#202632"
-                strokeWidth="8"
-              />
-              <circle
-                cx="70"
-                cy="70"
-                r={radius}
-                fill="none"
-                stroke="#38bdf8"
-                strokeWidth="8"
-                strokeLinecap="round"
-                strokeDasharray={circumference}
-                strokeDashoffset={circumference * (1 - fill)}
-                style={{ transition: "stroke-dashoffset 200ms linear" }}
-              />
-            </svg>
-            <div className="text-center">
-              <div className="font-mono text-2xl font-bold tracking-tight text-[#e6eaf0]">
-                {formatDuration(stats.buffered_seconds)}
-              </div>
-              <div className="mt-0.5 font-mono text-[10px] font-medium uppercase tracking-wider text-[#8d98a8]">
-                of {stats.buffer_seconds}s
-              </div>
+            <div className="mt-1.5 flex flex-wrap items-center gap-2 font-mono text-[11px] text-[#727e90]">
+              <span>{stats.width > 0 ? `${stats.width}×${stats.height}` : "1080p display"}</span>
+              <span>·</span>
+              <span>{stats.target_fps} FPS target</span>
+              <span>·</span>
+              <span>{stats.encoder.hardware ? stats.encoder.friendly_name : "Software Encoder"}</span>
+              {stats.capture_fps > 0 && (
+                <>
+                  <span>·</span>
+                  <span className="text-[#a0a9b6]">{stats.capture_fps.toFixed(0)} FPS live</span>
+                </>
+              )}
             </div>
           </div>
-          <div className="mt-1 font-mono text-[11px] text-[#8692a3]">
-            {formatBytes(stats.ring_bytes)} in RAM
-          </div>
         </div>
 
-        {/* Telemetry and metrics */}
-        <div className="space-y-3">
-          {/* Encoder Hardware Card */}
-          <div className="rounded-lg border border-[#232934] bg-[#14171e] p-3">
+        {/* Arm / Disarm Buffer Toggle */}
+        <button
+          type="button"
+          onClick={onToggle}
+          disabled={busy}
+          className={cn(
+            "rounded-lg border px-4 py-2 font-medium text-[12px] transition-colors",
+            armed
+              ? "border-[#384252] bg-[#222832] text-[#e8ecf2] hover:border-red-500/50 hover:bg-red-500/10 hover:text-red-300"
+              : "border-[#64b5f6]/40 bg-[#64b5f6]/10 text-[#64b5f6] hover:bg-[#64b5f6]/20 hover:border-[#64b5f6]",
+            busy && "cursor-wait opacity-60",
+          )}
+        >
+          {armed ? "Pause Buffer" : "Start Buffer"}
+        </button>
+      </div>
+
+      {/* ------------------------------------------------ Center: Primary Action & Replay Duration */}
+      <div className="grid gap-4 md:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)] items-stretch">
+        {/* Main CTA: Save Clip Button */}
+        <div className="rounded-xl border border-[#303744] bg-[#191d24] p-4 flex flex-col justify-between gap-3">
+          <div>
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="flex h-2 w-2 rounded-full bg-blue-400" />
-                <span className="font-mono text-[12px] font-semibold text-[#e6eaf0]">
-                  {VENDOR_LABEL[stats.encoder.vendor]}
-                </span>
-                <span className="rounded border border-[#2f3846] bg-[#1a202a] px-1.5 py-0.5 font-mono text-[10px] text-[#8d98a8]">
-                  {stats.encoder.hardware ? "GPU HARDWARE" : "CPU SOFTWARE"} · {stats.encoder.codec}
-                </span>
-              </div>
-              <span className="truncate font-mono text-[11px] text-[#717d8e]">
-                {stats.encoder.adapter_name}
+              <span className="text-[11px] font-semibold tracking-wider uppercase text-[#a0a9b6]">
+                Instant Replay
+              </span>
+              <span className="font-mono text-[11px] text-[#727e90]">
+                Hotkey: <kbd className="rounded border border-[#384252] bg-[#222832] px-1.5 py-0.5 font-semibold text-[#e8ecf2]">{hotkey.toUpperCase()}</kbd>
               </span>
             </div>
 
-            <div className="mt-1 truncate font-mono text-[11px] text-[#8692a3]">
-              {stats.encoder.friendly_name}
-            </div>
-
-            <div className="mt-2">
-              <EncodeSparkline value={stats.encode_ms_avg} />
-            </div>
-
-            <div className="mt-1 flex items-center justify-between font-mono text-[10px] text-[#8692a3]">
-              <span>Encode latency</span>
-              <span className="font-medium text-[#38bdf8]">{stats.encode_ms_avg.toFixed(2)} ms / frame</span>
-            </div>
+            <p className="mt-1.5 text-[12px] leading-relaxed text-[#a0a9b6]">
+              Saves the last {stats.buffer_seconds} seconds of gameplay directly to an MP4 video file.
+            </p>
           </div>
 
-          {/* Metric cards */}
-          <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
-            <Metric
-              label="Memory"
-              value={formatBytes(stats.process_rss_bytes, 0)}
-              sub={stats.state === "idle" ? "idle process" : "buffer + ring"}
-            />
-            <Metric
-              label="GPU Acquire"
-              value={`${stats.gpu_submit_ms_avg.toFixed(2)} ms`}
-              sub="acquire to blit"
-            />
-            <Metric
-              label="Dropped"
-              value={String(stats.dropped_frames)}
-              sub={`${stats.device_resets} reset${stats.device_resets === 1 ? "" : "s"}`}
-              highlight={stats.dropped_frames > 0}
-            />
-            <Metric
-              label="Global Hotkey"
-              value={hotkey.toUpperCase()}
-              sub="works in full-screen"
-            />
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={onSave}
+              disabled={!statusConfig.actionReady || busy}
+              className={cn(
+                "flex-1 flex items-center justify-center gap-2.5 rounded-lg py-3 px-4 font-semibold text-[13px] transition-all",
+                statusConfig.actionReady && !busy
+                  ? "bg-[#64b5f6] text-[#0f172a] shadow-md hover:bg-[#90caf9] active:scale-[0.99] cursor-pointer"
+                  : "bg-[#222832] text-[#727e90] border border-[#303744] cursor-not-allowed",
+              )}
+            >
+              {busy ? (
+                <>
+                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-slate-900 border-t-transparent" />
+                  <span>Saving Clip…</span>
+                </>
+              ) : (
+                <>
+                  <svg viewBox="0 0 16 16" className="h-4 w-4 fill-current">
+                    <path d="M3 2.5a.5.5 0 0 1 .5-.5h9a.5.5 0 0 1 .5.5v11a.5.5 0 0 1-.8.4L8 10.333l-4.2 3.567a.5.5 0 0 1-.8-.4v-11z" />
+                  </svg>
+                  <span>Save Last {stats.buffer_seconds} Seconds</span>
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+
+        {/* Replay Duration Selector */}
+        <div className="rounded-xl border border-[#303744] bg-[#191d24] p-4 flex flex-col justify-between gap-3">
+          <div>
+            <div className="text-[11px] font-semibold tracking-wider uppercase text-[#a0a9b6]">
+              Replay Duration
+            </div>
+            <p className="mt-1 text-[12px] text-[#a0a9b6]">
+              Choose how much recent gameplay to keep in high-speed RAM.
+            </p>
           </div>
 
-          {/* Audio, drift, and uptime status */}
-          <div className="flex flex-wrap items-center gap-2 font-mono text-[10px]">
-            <span
-              className={cn(
-                "flex items-center gap-1.5 rounded-full border px-2.5 py-1 tracking-wider",
-                stats.audio_system && !stats.audio_error
-                  ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
-                  : "border-[#2c3543] bg-[#14171e] text-[#7e8b9d]",
-              )}
-            >
-              <span
-                className={cn(
-                  "h-1.5 w-1.5 rounded-full",
-                  stats.audio_system && !stats.audio_error ? "bg-emerald-400" : "bg-[#556172]",
-                )}
-              />
-              GAME AUDIO {stats.audio_system ? "ON" : "OFF"}
-            </span>
+          <div className="flex items-center gap-2">
+            {REPLAY_DURATIONS.map((dur) => {
+              const active = stats.buffer_seconds === dur;
+              return (
+                <button
+                  key={dur}
+                  type="button"
+                  onClick={() => onSelectDuration?.(dur)}
+                  disabled={busy}
+                  className={cn(
+                    "flex-1 rounded-lg border py-2 text-center font-mono text-[12px] font-semibold transition-all",
+                    active
+                      ? "border-[#64b5f6] bg-[#64b5f6]/15 text-[#64b5f6]"
+                      : "border-[#303744] bg-[#222832] text-[#a0a9b6] hover:border-[#384252] hover:text-[#e8ecf2]",
+                  )}
+                >
+                  {dur >= 60 ? `${dur / 60}m` : `${dur}s`}
+                </button>
+              );
+            })}
+          </div>
 
-            <span
-              className={cn(
-                "flex items-center gap-1.5 rounded-full border px-2.5 py-1 tracking-wider",
-                stats.audio_mic
-                  ? "border-blue-500/30 bg-blue-500/10 text-blue-300"
-                  : "border-[#2c3543] bg-[#14171e] text-[#7e8b9d]",
-              )}
-            >
-              <span
-                className={cn(
-                  "h-1.5 w-1.5 rounded-full",
-                  stats.audio_mic ? "bg-blue-400" : "bg-[#556172]",
-                )}
-              />
-              MIC {stats.audio_mic ? "ON" : "OFF"}
-            </span>
-
-            <span className="rounded-full border border-[#28303d] bg-[#14171e] px-2.5 py-1 tracking-wider text-[#8692a3]">
-              A/V DRIFT {stats.audio_drift_ms.toFixed(2)} ms
-            </span>
-
-            <span className="rounded-full border border-[#28303d] bg-[#14171e] px-2.5 py-1 tracking-wider text-[#8692a3]">
-              UPTIME {formatDuration(stats.uptime_seconds)}
+          <div className="flex items-center justify-between font-mono text-[11px] text-[#727e90]">
+            <span>Buffer capacity:</span>
+            <span className="text-[#e8ecf2] font-medium">
+              {formatDuration(stats.buffered_seconds)} / {stats.buffer_seconds}s ({fillPercent}%)
             </span>
           </div>
         </div>
       </div>
 
-      {stats.last_error && (
-        <div className="mt-4 rounded-lg border border-red-500/30 bg-red-500/10 px-3.5 py-2.5 font-mono text-[11px] text-red-200">
-          <span className="font-semibold text-red-100">Engine fault: </span>
-          {stats.last_error}
+      {/* ------------------------------------------------ Audio Health Cards (Split Game Audio & Mic) */}
+      <div className="grid gap-3 sm:grid-cols-2">
+        {/* Game Audio */}
+        <div className="rounded-xl border border-[#303744] bg-[#191d24] p-3.5 flex items-start gap-3">
+          <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[#303744] bg-[#222832] text-[#e8ecf2]">
+            <svg viewBox="0 0 16 16" className="h-4 w-4 fill-none stroke-current" strokeWidth="1.5">
+              <path d="M2.5 6.5h2.5l3.5-3.5v10L5 9.5H2.5v-3z" />
+              <path d="M11 5.5a3.5 3.5 0 0 1 0 5" strokeLinecap="round" />
+            </svg>
+          </div>
+
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[12px] font-semibold text-[#e8ecf2]">Game Audio</span>
+              <div className="flex items-center gap-1.5">
+                <span className={cn("flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-medium", audioInfo.gameAudio.tone)}>
+                  <span className={cn("h-1.5 w-1.5 rounded-full", audioInfo.gameAudio.dot)} />
+                  {audioInfo.gameAudio.status}
+                </span>
+                {onOpenSettings && (audioInfo.gameAudio.isError || !stats.audio_system) && (
+                  <button
+                    type="button"
+                    onClick={onOpenSettings}
+                    className="text-[10px] font-medium text-[#64b5f6] hover:underline cursor-pointer"
+                  >
+                    Setup →
+                  </button>
+                )}
+              </div>
+            </div>
+            <p className="mt-1 text-[11px] text-[#a0a9b6] leading-normal truncate">
+              {audioInfo.gameAudio.message}
+            </p>
+          </div>
         </div>
-      )}
+
+        {/* Microphone */}
+        <div className="rounded-xl border border-[#303744] bg-[#191d24] p-3.5 flex items-start gap-3">
+          <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[#303744] bg-[#222832] text-[#e8ecf2]">
+            <svg viewBox="0 0 16 16" className="h-4 w-4 fill-none stroke-current" strokeWidth="1.5">
+              <rect x="5.5" y="2" width="5" height="8" rx="2.5" />
+              <path d="M3.5 7.5a4.5 4.5 0 0 0 9 0M8 12v2.5M5.5 14.5h5" strokeLinecap="round" />
+            </svg>
+          </div>
+
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[12px] font-semibold text-[#e8ecf2]">Microphone</span>
+              <div className="flex items-center gap-1.5">
+                <span className={cn("flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-medium", audioInfo.microphone.tone)}>
+                  <span className={cn("h-1.5 w-1.5 rounded-full", audioInfo.microphone.dot)} />
+                  {audioInfo.microphone.status}
+                </span>
+                {onOpenSettings && (audioInfo.microphone.isError || !stats.audio_mic) && (
+                  <button
+                    type="button"
+                    onClick={onOpenSettings}
+                    className="text-[10px] font-medium text-[#64b5f6] hover:underline cursor-pointer"
+                  >
+                    Setup →
+                  </button>
+                )}
+              </div>
+            </div>
+            <p className="mt-1 text-[11px] text-[#a0a9b6] leading-normal truncate">
+              {audioInfo.microphone.message}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* ------------------------------------------------ Expandable Technical Diagnostics */}
+      <div className="rounded-lg border border-[#303744]/70 bg-[#161a22] overflow-hidden">
+        <button
+          type="button"
+          onClick={() => setShowDiagnostics((v) => !v)}
+          className="w-full flex items-center justify-between px-3.5 py-2.5 text-left transition-colors hover:bg-[#1a202a]"
+        >
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] font-semibold tracking-wide text-[#a0a9b6]">
+              Technical Diagnostics & System Details
+            </span>
+            <span className="font-mono text-[10px] text-[#727e90]">
+              ({stats.encode_ms_avg.toFixed(1)} ms latency · {formatBytes(stats.process_rss_bytes, 0)} RAM)
+            </span>
+          </div>
+
+          <span className="font-mono text-[11px] text-[#727e90]">
+            {showDiagnostics ? "Hide Details ▲" : "View Details ▼"}
+          </span>
+        </button>
+
+        {showDiagnostics && (
+          <div className="border-t border-[#303744] p-4 space-y-3.5 animate-fade">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 font-mono text-[11px]">
+              <div className="rounded border border-[#303744] bg-[#191d24] p-2.5">
+                <div className="text-[10px] text-[#727e90] uppercase">Display Acquire</div>
+                <div className="mt-1 font-semibold text-[#e8ecf2]">
+                  {stats.gpu_submit_ms_avg.toFixed(2)} ms
+                </div>
+                <div className="text-[10px] text-[#a0a9b6] mt-0.5">DXGI duplication latency</div>
+              </div>
+
+              <div className="rounded border border-[#303744] bg-[#191d24] p-2.5">
+                <div className="text-[10px] text-[#727e90] uppercase">Encoding Latency</div>
+                <div className="mt-1 font-semibold text-[#64b5f6]">
+                  {stats.encode_ms_avg.toFixed(2)} ms / frame
+                </div>
+                <div className="text-[10px] text-[#a0a9b6] mt-0.5">{stats.encoder.codec} hardware MFT</div>
+              </div>
+
+              <div className="rounded border border-[#303744] bg-[#191d24] p-2.5">
+                <div className="text-[10px] text-[#727e90] uppercase">Memory Footprint</div>
+                <div className="mt-1 font-semibold text-[#e8ecf2]">
+                  {formatBytes(stats.process_rss_bytes, 0)}
+                </div>
+                <div className="text-[10px] text-[#a0a9b6] mt-0.5">{formatBytes(stats.ring_bytes)} ring buffer</div>
+              </div>
+
+              <div className="rounded border border-[#303744] bg-[#191d24] p-2.5">
+                <div className="text-[10px] text-[#727e90] uppercase">Dropped Frames</div>
+                <div className={cn("mt-1 font-semibold", stats.dropped_frames > 0 ? "text-amber-400" : "text-[#e8ecf2]")}>
+                  {stats.dropped_frames} frames
+                </div>
+                <div className="text-[10px] text-[#a0a9b6] mt-0.5">{stats.device_resets} device resets</div>
+              </div>
+            </div>
+
+            {/* Hardware Encoder Info & Latency Sparkline */}
+            <div className="rounded border border-[#303744] bg-[#191d24] p-3">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-semibold text-[#e8ecf2]">
+                  {VENDOR_LABEL[stats.encoder.vendor]} · {stats.encoder.friendly_name}
+                </span>
+                <span className="font-mono text-[10px] text-[#727e90]">
+                  {stats.encoder.adapter_name}
+                </span>
+              </div>
+              <div className="mt-2">
+                <LatencySparkline value={stats.encode_ms_avg} />
+              </div>
+            </div>
+
+            {stats.last_error && (
+              <div className="rounded border border-red-500/30 bg-red-500/10 p-2.5 font-mono text-[11px] text-red-200">
+                <span className="font-semibold text-red-100">Last Engine Fault: </span>
+                {stats.last_error}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </section>
   );
 }

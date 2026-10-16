@@ -84,20 +84,26 @@ pub fn on_shortcut(app: &AppHandle, shortcut: &Shortcut, state: ShortcutState) {
     let Some(app_state) = app.try_state::<AppState>() else {
         return;
     };
-    let settings = app_state.settings.read().clone();
+    // Read only the two hotkey strings — cloning the full Settings (which
+    // includes Vec<CaptureProfile> and Vec<ProfileMapEntry>) on every global
+    // shortcut event is wasteful and holds the read lock longer than needed.
+    let (save_key, toggle_key) = {
+        let s = app_state.settings.read();
+        (s.hotkey_save.clone(), s.hotkey_toggle.clone())
+    };
 
-    let save_matches = parse(&settings.hotkey_save)
+    let save_matches = parse(&save_key)
         .map(|s| &s == shortcut)
         .unwrap_or(false);
-    let toggle_matches = parse(&settings.hotkey_toggle)
+    let toggle_matches = parse(&toggle_key)
         .map(|s| &s == shortcut)
         .unwrap_or(false);
 
     if save_matches {
-        let _ = app.emit(EVT_HOTKEY, settings.hotkey_save.clone());
+        let _ = app.emit(EVT_HOTKEY, save_key);
         trigger_save(app.clone());
     } else if toggle_matches {
-        let _ = app.emit(EVT_HOTKEY, settings.hotkey_toggle.clone());
+        let _ = app.emit(EVT_HOTKEY, toggle_key);
         trigger_toggle(app.clone());
     }
 }

@@ -106,6 +106,11 @@ mod imp {
         CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL,
         COINIT_MULTITHREADED,
     };
+    use windows::Win32::System::Threading::{
+        GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_TIME_CRITICAL,
+        AvSetMmThreadCharacteristicsW, AvRevertMmThreadCharacteristics,
+    };
+    use windows::core::PCWSTR;
 
     use windows::Win32::UI::Shell::PropertiesSystem::PROPERTYKEY;
 
@@ -311,10 +316,11 @@ mod imp {
 
             let silent = (flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32) != 0;
             let n = frames as usize * ep.channels as usize;
+            let frames_channels = frames as usize * CHANNELS as usize;
 
             if ep.rate == SAMPLE_RATE {
                 if silent || data.is_null() {
-                    out.extend(std::iter::repeat(0.0).take(frames as usize * CHANNELS as usize));
+                    out.resize(out.len() + frames_channels, 0.0);
                 } else if ep.float {
                     let src = std::slice::from_raw_parts(data as *const f32, n);
                     downmix(src, ep.channels, out);
@@ -323,12 +329,12 @@ mod imp {
                     let tmp: Vec<f32> = src.iter().map(|s| *s as f32 / 32768.0).collect();
                     downmix(&tmp, ep.channels, out);
                 } else {
-                    out.extend(std::iter::repeat(0.0).take(frames as usize * CHANNELS as usize));
+                    out.resize(out.len() + frames_channels, 0.0);
                 }
             } else {
                 ep.temp_stereo.clear();
                 if silent || data.is_null() {
-                    ep.temp_stereo.extend(std::iter::repeat(0.0).take(frames as usize * CHANNELS as usize));
+                    ep.temp_stereo.resize(frames_channels, 0.0);
                 } else if ep.float {
                     let src = std::slice::from_raw_parts(data as *const f32, n);
                     downmix(src, ep.channels, &mut ep.temp_stereo);
@@ -337,7 +343,7 @@ mod imp {
                     let tmp: Vec<f32> = src.iter().map(|s| *s as f32 / 32768.0).collect();
                     downmix(&tmp, ep.channels, &mut ep.temp_stereo);
                 } else {
-                    ep.temp_stereo.extend(std::iter::repeat(0.0).take(frames as usize * CHANNELS as usize));
+                    ep.temp_stereo.resize(frames_channels, 0.0);
                 }
                 resample_stereo(&ep.temp_stereo, ep.rate, SAMPLE_RATE, &mut ep.resample_phase, out);
             }
@@ -416,7 +422,7 @@ mod imp {
             &self,
             pcm: &[i16],
             pts_hns: i64,
-            mut sink: impl FnMut(Vec<u8>, i64, i64),
+            mut sink: impl FnMut(&[u8], i64, i64),
         ) -> windows::core::Result<()> {
             let bytes = pcm.len() * 2;
             let buffer = MFCreateMemoryBuffer(bytes as u32)?;
@@ -460,11 +466,11 @@ mod imp {
                 let mut p: *mut u8 = std::ptr::null_mut();
                 let mut cur = 0u32;
                 contiguous.Lock(&mut p, None, Some(&mut cur))?;
-                let payload = std::slice::from_raw_parts(p, cur as usize).to_vec();
-                let _ = contiguous.Unlock();
+                let payload = std::slice::from_raw_parts(p, cur as usize);
                 if !payload.is_empty() {
                     sink(payload, t, d);
                 }
+                let _ = contiguous.Unlock();
                 let _ = std::mem::ManuallyDrop::take(&mut out[0].pSample);
             }
         }
@@ -507,8 +513,20 @@ mod imp {
         clock: Arc<QpcClock>,
     ) {
         unsafe {
+            let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+            let mut task_index = 0u32;
+            let class: Vec<u16> = "Pro Audio\0".encode_utf16().collect();
+            let mmcss_handle = AvSetMmThreadCharacteristicsW(
+                PCWSTR(class.as_ptr()),
+                &mut task_index,
+            )
+            .ok();
+
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
             if MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET).is_err() {
+                if let Some(h) = mmcss_handle {
+                    let _ = AvRevertMmThreadCharacteristics(h);
+                }
                 *status.lock() = Some("Media Foundation failed to start".into());
                 CoUninitialize();
                 return;
@@ -656,7 +674,7 @@ mod imp {
                         mixed_pending.clear();
                     } else {
                         while now_hns > next_pts + frame_duration_hns && mixed_pending.len() < FRAME_SAMPLES * 4 {
-                            mixed_pending.extend(std::iter::repeat(0.0f32).take(FRAME_SAMPLES));
+                            mixed_pending.resize(mixed_pending.len() + FRAME_SAMPLES, 0.0);
                         }
                     }
                 }
@@ -693,7 +711,7 @@ mod imp {
                     let _ = enc.encode(&pcm, pts, |payload, t, d| {
                         ring_ref.lock().push(EncodedPacket {
                             track: TrackKind::Audio,
-                            data: Arc::from(payload.into_boxed_slice()),
+                            data: Arc::from(payload),
                             pts_hns: t,
                             duration_hns: d,
                             keyframe: true,
@@ -705,6 +723,9 @@ mod imp {
                 std::thread::sleep(std::time::Duration::from_millis(8));
             }
 
+            if let Some(h) = mmcss_handle {
+                let _ = AvRevertMmThreadCharacteristics(h);
+            }
             if let Some(ep) = loopback.as_ref() {
                 let _ = ep.client.Stop();
             }

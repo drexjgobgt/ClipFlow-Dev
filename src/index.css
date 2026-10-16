@@ -1,20 +1,25 @@
 @import "tailwindcss";
 
 @theme {
-  --color-void: #0d0f14;
-  --color-deck: #111318;
-  --color-panel: #171b22;
-  --color-panel-2: #1e232d;
-  --color-line: #28303d;
-  --color-line-subtle: #1f2530;
-  --color-accent: #3b82f6;
-  --color-accent-light: #60a5fa;
-  --color-accent-subtle: rgba(59, 130, 246, 0.12);
-  --color-success: #10b981;
-  --color-success-light: #34d399;
-  --color-amber: #f59e0b;
-  --color-danger: #ef4444;
-  --color-danger-light: #f87171;
+  --color-app-bg: #111318;
+  --color-surface: #191d24;
+  --color-surface-elevated: #222832;
+  --color-surface-hover: #1f2530;
+  --color-border: #303744;
+  --color-border-subtle: #242b36;
+  --color-border-focus: #64b5f6;
+  --color-text-primary: #e8ecf2;
+  --color-text-secondary: #a0a9b6;
+  --color-text-muted: #727e90;
+  --color-accent: #64b5f6;
+  --color-accent-hover: #90caf9;
+  --color-accent-subtle: rgba(100, 181, 246, 0.12);
+  --color-success: #34d399;
+  --color-success-bg: rgba(52, 211, 153, 0.12);
+  --color-warning: #f59e0b;
+  --color-warning-bg: rgba(245, 158, 11, 0.12);
+  --color-error: #f87171;
+  --color-error-bg: rgba(248, 113, 113, 0.12);
   --font-sans: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   --font-mono: "Cascadia Code", "JetBrains Mono", Consolas, ui-monospace, SFMono-Regular, monospace;
 }
@@ -29,7 +34,7 @@
   body {
     margin: 0;
     background: #111318;
-    color: #e6eaf0;
+    color: #e8ecf2;
     font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
@@ -38,7 +43,7 @@
   }
 
   ::selection {
-    background: rgba(59, 130, 246, 0.35);
+    background: rgba(100, 181, 246, 0.3);
     color: #ffffff;
   }
 
@@ -50,26 +55,26 @@
     background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: #242c38;
+    background: #2a323f;
     border-radius: 4px;
     border: 2px solid #111318;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: #323d4e;
+    background: #384354;
   }
 }
 
 @layer utilities {
   .panel {
-    background: #171b22;
-    border: 1px solid #28303d;
-    box-shadow: 0 4px 16px -4px rgba(0, 0, 0, 0.5);
+    background: #191d24;
+    border: 1px solid #303744;
+    box-shadow: 0 4px 16px -4px rgba(0, 0, 0, 0.45);
   }
 
   .panel-elevated {
-    background: #1e232d;
-    border: 1px solid #313a49;
-    box-shadow: 0 6px 20px -4px rgba(0, 0, 0, 0.6);
+    background: #222832;
+    border: 1px solid #384252;
+    box-shadow: 0 6px 20px -4px rgba(0, 0, 0, 0.55);
   }
 
   .panel-hover {
@@ -79,23 +84,21 @@
       box-shadow 150ms ease;
   }
   .panel-hover:hover {
-    border-color: #3b4657;
-    background-color: #1a1f28;
-    box-shadow: 0 8px 24px -6px rgba(0, 0, 0, 0.7);
+    border-color: #444f63;
+    background-color: #1d232c;
+    box-shadow: 0 8px 24px -6px rgba(0, 0, 0, 0.65);
   }
 
   .drag-region {
     -webkit-app-region: drag;
-    app-region: drag;
   }
   .no-drag {
     -webkit-app-region: no-drag;
-    app-region: no-drag;
   }
 
   /* Accessible focus indicators across keyboard navigation */
   :focus-visible {
-    outline: 2px solid #60a5fa !important;
+    outline: 2px solid #64b5f6 !important;
     outline-offset: 1px !important;
   }
 
@@ -179,20 +182,20 @@
   }
   input[type="range"].cf-range::-webkit-slider-thumb:hover {
     transform: scale(1.15);
-    background: #60a5fa;
+    background: #64b5f6;
   }
   input[type="range"].cf-range::-moz-range-thumb {
     width: 14px;
     height: 14px;
     border-radius: 50%;
-    background: #e6eaf0;
-    border: 2px solid #171b22;
+    background: #e8ecf2;
+    border: 2px solid #191d24;
     cursor: pointer;
     box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
     transition: transform 120ms ease, background-color 120ms ease;
   }
   input[type="range"].cf-range::-moz-range-thumb:hover {
     transform: scale(1.15);
-    background: #60a5fa;
+    background: #64b5f6;
   }
 }

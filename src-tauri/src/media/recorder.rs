@@ -933,7 +933,7 @@ impl Drop for CaptureEngine {
 mod win {
     use super::*;
     use windows::core::{Interface, PCWSTR, PWSTR};
-    use windows::Win32::Foundation::{HANDLE, HMODULE, TRUE};
+    use windows::Win32::Foundation::{HANDLE, HMODULE, TRUE, E_UNEXPECTED};
     use windows::Win32::Graphics::Direct3D::{
         D3D_FEATURE_LEVEL, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1,
     };
@@ -941,10 +941,11 @@ mod win {
     use windows::Win32::Graphics::Dxgi::Common::*;
     use windows::Win32::Graphics::Dxgi::*;
     use windows::Win32::Media::MediaFoundation::*;
+    use windows::Win32::Media::{timeBeginPeriod, timeEndPeriod};
     use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
     use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
     use windows::Win32::System::Threading::{
-        GetCurrentProcess, GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL,
+        GetCurrentProcess, GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_HIGHEST,
     };
 
     pub(super) fn hr(e: windows::core::Error) -> RecorderError {
@@ -959,6 +960,7 @@ mod win {
             || c == DXGI_ERROR_ACCESS_LOST
             || c == DXGI_ERROR_DEVICE_HUNG
             || c == DXGI_ERROR_DRIVER_INTERNAL_ERROR
+            || c == E_UNEXPECTED
     }
 
     // ------------------------------------------------------- MF lifecycle
@@ -983,6 +985,26 @@ mod win {
         }
     }
 
+    // ------------------------------------------------- timer resolution
+    pub(super) struct HighResTimerGuard;
+
+    impl HighResTimerGuard {
+        pub fn new() -> Self {
+            unsafe {
+                let _ = timeBeginPeriod(1);
+            }
+            Self
+        }
+    }
+
+    impl Drop for HighResTimerGuard {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = timeEndPeriod(1);
+            }
+        }
+    }
+
     // ----------------------------------------------------- D3D11 + DXGI
     pub(super) struct GraphicsStack {
         pub device: ID3D11Device,
@@ -993,6 +1015,7 @@ mod win {
         pub vram_mb: u64,
         pub src_width: u32,
         pub src_height: u32,
+        pub src_format: DXGI_FORMAT,
     }
 
     impl GraphicsStack {
@@ -1093,6 +1116,7 @@ mod win {
             Ok(Self {
                 src_width: desc.ModeDesc.Width,
                 src_height: desc.ModeDesc.Height,
+                src_format: desc.ModeDesc.Format,
                 device,
                 context,
                 duplication,
@@ -1112,13 +1136,19 @@ mod win {
     }
 
     // --------------------------------------------- BGRA ➜ NV12 on the GPU
+    #[allow(dead_code)]
     pub(super) struct ColorConverter {
         vdevice: ID3D11VideoDevice,
         vcontext: ID3D11VideoContext,
+        context: ID3D11DeviceContext,
         processor: ID3D11VideoProcessor,
         enumerator: ID3D11VideoProcessorEnumerator,
+        input_tex: ID3D11Texture2D,
+        in_view: ID3D11VideoProcessorInputView,
         pub nv12: ID3D11Texture2D,
         out_view: ID3D11VideoProcessorOutputView,
+        src_w: u32,
+        src_h: u32,
         _dst_w: u32,
         _dst_h: u32,
     }
@@ -1132,6 +1162,7 @@ mod win {
             context: &ID3D11DeviceContext,
             src_w: u32,
             src_h: u32,
+            src_format: DXGI_FORMAT,
             dst_w: u32,
             dst_h: u32,
             fps: u32,
@@ -1174,6 +1205,46 @@ mod win {
                     D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
                 );
 
+                let input_desc = D3D11_TEXTURE2D_DESC {
+                    Width: src_w,
+                    Height: src_h,
+                    MipLevels: 1,
+                    ArraySize: 1,
+                    Format: if src_format == DXGI_FORMAT_UNKNOWN {
+                        DXGI_FORMAT_B8G8R8A8_UNORM
+                    } else {
+                        src_format
+                    },
+                    SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+                    Usage: D3D11_USAGE_DEFAULT,
+                    BindFlags: (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
+                    CPUAccessFlags: 0,
+                    MiscFlags: 0,
+                };
+                let mut input_tex: Option<ID3D11Texture2D> = None;
+                device
+                    .CreateTexture2D(&input_desc, None, Some(&mut input_tex))
+                    .map_err(hr)?;
+                let input_tex =
+                    input_tex.ok_or_else(|| RecorderError::Other("no input texture".into()))?;
+
+                let ivd = D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC {
+                    FourCC: 0,
+                    ViewDimension: D3D11_VPIV_DIMENSION_TEXTURE2D,
+                    Anonymous: D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0 {
+                        Texture2D: D3D11_TEX2D_VPIV {
+                            MipSlice: 0,
+                            ArraySlice: 0,
+                        },
+                    },
+                };
+                let mut in_view: Option<ID3D11VideoProcessorInputView> = None;
+                vdevice
+                    .CreateVideoProcessorInputView(&input_tex, &enumerator, &ivd, Some(&mut in_view))
+                    .map_err(hr)?;
+                let in_view =
+                    in_view.ok_or_else(|| RecorderError::Other("no vp input view".into()))?;
+
                 let nv12_desc = D3D11_TEXTURE2D_DESC {
                     Width: dst_w,
                     Height: dst_h,
@@ -1208,10 +1279,15 @@ mod win {
                 Ok(Self {
                     vdevice,
                     vcontext,
+                    context: context.clone(),
                     processor,
                     enumerator,
+                    input_tex,
+                    in_view,
                     nv12,
                     out_view,
+                    src_w,
+                    src_h,
                     _dst_w: dst_w,
                     _dst_h: dst_h,
                 })
@@ -1221,36 +1297,23 @@ mod win {
         /// One `VideoProcessorBlt` = colour convert + scale + (optional) crop.
         pub fn convert(&self, src: &ID3D11Texture2D) -> RResult<()> {
             unsafe {
-                let ivd = D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC {
-                    FourCC: 0,
-                    ViewDimension: D3D11_VPIV_DIMENSION_TEXTURE2D,
-                    Anonymous: D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0 {
-                        Texture2D: D3D11_TEX2D_VPIV {
-                            MipSlice: 0,
-                            ArraySlice: 0,
-                        },
-                    },
-                };
-                let mut in_view: Option<ID3D11VideoProcessorInputView> = None;
-                self.vdevice
-                    .CreateVideoProcessorInputView(src, &self.enumerator, &ivd, Some(&mut in_view))
-                    .map_err(hr)?;
-                let in_view =
-                    in_view.ok_or_else(|| RecorderError::Other("no vp input view".into()))?;
+                self.context.CopyResource(&self.input_tex, src);
 
-                let stream = D3D11_VIDEO_PROCESSOR_STREAM {
+                let mut streams = [D3D11_VIDEO_PROCESSOR_STREAM {
                     Enable: TRUE,
                     OutputIndex: 0,
                     InputFrameOrField: 0,
                     PastFrames: 0,
                     FutureFrames: 0,
-                    pInputSurface: std::mem::ManuallyDrop::new(Some(in_view.clone())),
+                    pInputSurface: std::mem::ManuallyDrop::new(Some(self.in_view.clone())),
                     ..Default::default()
-                };
+                }];
 
                 let result = self
                     .vcontext
-                    .VideoProcessorBlt(&self.processor, &self.out_view, 0, &[stream]);
+                    .VideoProcessorBlt(&self.processor, &self.out_view, 0, &streams);
+
+                let _ = std::mem::ManuallyDrop::take(&mut streams[0].pInputSurface);
 
                 result.map_err(hr)
             }
@@ -1556,7 +1619,7 @@ mod win {
         }
 
         /// Drains every ready access unit into `sink`.
-        pub fn drain(&mut self, mut sink: impl FnMut(Vec<u8>, i64, i64, bool)) -> RResult<()> {
+        pub fn drain(&mut self, mut sink: impl FnMut(&[u8], i64, i64, bool)) -> RResult<()> {
             unsafe {
                 if self.async_mode {
                     self.pump_events(false)?;
@@ -1583,6 +1646,10 @@ mod win {
                             }
                             return Ok(());
                         }
+                        Err(e) if e.code() == E_UNEXPECTED => {
+                            // E_UNEXPECTED (0x8000FFFF) cleanly signals shutdown/device teardown
+                            return Ok(());
+                        }
                         Err(e) => return Err(hr(e)),
                     }
 
@@ -1604,10 +1671,9 @@ mod win {
                     buffer
                         .Lock(&mut ptr, Some(&mut max_len), Some(&mut cur_len))
                         .map_err(hr)?;
-                    let payload = std::slice::from_raw_parts(ptr, cur_len as usize).to_vec();
+                    let slice = std::slice::from_raw_parts(ptr, cur_len as usize);
+                    sink(slice, pts, dur, keyframe);
                     let _ = buffer.Unlock();
-
-                    sink(payload, pts, dur, keyframe);
                 }
             }
         }
@@ -1892,7 +1958,7 @@ mod win {
 
     pub(super) fn boost_thread() {
         unsafe {
-            let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+            let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
         }
         // MMCSS "Capture" class prevents the scheduler from parking us while a
         // full-screen game hogs the CPU.
@@ -1918,6 +1984,7 @@ mod win {
         fmt: Arc<Mutex<Option<VideoFormatHeader>>>,
         clock: Arc<super::QpcClock>,
     ) {
+        let _timer_guard = HighResTimerGuard::new();
         let _session = match MfSession::new() {
             Ok(s) => s,
             Err(e) => {
@@ -1949,6 +2016,7 @@ mod win {
                 &gfx.context,
                 gfx.src_width,
                 gfx.src_height,
+                gfx.src_format,
                 dst_w,
                 dst_h,
                 cfg.target_fps,
@@ -2019,13 +2087,13 @@ mod win {
                     continue 'outer;
                 }
 
-                // Frame pacing: sleep to the deadline, then spin the last 1 ms
-                // for jitter under 0.3 ms without burning a whole core.
+                // Frame pacing: sleep to the deadline, then spin the last 0.3 ms
+                // for jitter under 0.1 ms without burning a whole core.
                 let now = Instant::now();
                 if now < next_deadline {
                     let remaining = next_deadline - now;
-                    if remaining > Duration::from_millis(2) {
-                        std::thread::sleep(remaining - Duration::from_millis(1));
+                    if remaining > Duration::from_micros(1500) {
+                        std::thread::sleep(remaining - Duration::from_micros(400));
                     }
                     while Instant::now() < next_deadline {
                         std::hint::spin_loop();
@@ -2119,10 +2187,10 @@ mod win {
                         }
 
                         let ring = Arc::clone(&shared.ring);
-                        let drain = encoder.drain(|payload, pts, dur, key| {
+                        let drain = encoder.drain(|slice, pts, dur, key| {
                             let pkt = EncodedPacket {
                                 track: TrackKind::Video,
-                                data: Arc::from(payload.into_boxed_slice()),
+                                data: Arc::from(slice),
                                 pts_hns: pts,
                                 duration_hns: dur,
                                 keyframe: key,
@@ -2132,7 +2200,9 @@ mod win {
                         });
 
                         if let Err(e) = drain {
-                            log::warn!("[clipflow] encoder drain failed: {e}");
+                            if !shared.stop_requested.load(Ordering::Acquire) {
+                                log::warn!("[clipflow] encoder drain failed: {e}");
+                            }
                         }
 
                         shared.frames_encoded.fetch_add(1, Ordering::Relaxed);

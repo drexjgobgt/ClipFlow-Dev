@@ -113,7 +113,10 @@ headless-sim = []
 incremental = true
 
 [profile.release]
-opt-level = "s"     # size first - ClipFlow ships as a single ~6 MB exe
+# Speed-optimised: the DXGI capture loop, colour converter and ring buffer
+# hot paths benefit far more from inlining/vectorisation than a 1-2 MB
+# binary size saving. Installer size increase is negligible for a desktop app.
+opt-level = 3
 lto = true
 codegen-units = 1
 panic = "abort"

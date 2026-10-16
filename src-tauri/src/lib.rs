@@ -151,11 +151,11 @@ pub fn run() {
                 });
             }
 
-            // Stats heartbeat: 4 Hz is enough for smooth gauges and costs
-            // roughly nothing (one atomic read per field).
+            // Stats heartbeat: 2 Hz is sufficient for smooth gauges and halves
+            // the IPC / JSON serialization / React re-render overhead vs 4 Hz.
             let h = handle.clone();
             tauri::async_runtime::spawn(async move {
-                let mut ticker = tokio::time::interval(Duration::from_millis(250));
+                let mut ticker = tokio::time::interval(Duration::from_millis(500));
                 let mut topmost_tick = 0u32;
                 loop {
                     ticker.tick().await;
@@ -170,7 +170,8 @@ pub fn run() {
                     // re-assert it every ~2 s while the HUD is visible so it
                     // stays pinned above games (incl. borderless fullscreen).
                     topmost_tick = topmost_tick.wrapping_add(1);
-                    if topmost_tick % 8 == 0 {
+                    // 4 ticks × 500 ms = 2 s re-assertion interval (unchanged from before).
+                    if topmost_tick % 4 == 0 {
                         if let Some(hud) = h.get_webview_window("hud") {
                             if hud.is_visible().unwrap_or(false) {
                                 commands::force_topmost(&hud);
