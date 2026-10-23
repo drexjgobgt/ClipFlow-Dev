@@ -60,6 +60,7 @@ impl AudioCapture {
         generation: Arc<AtomicU32>,
         status: Arc<Mutex<Option<String>>>,
         clock: Arc<QpcClock>,
+        performance_mode: bool,
     ) -> Result<Self, RecorderError> {
         let stop = Arc::new(AtomicBool::new(false));
         let mut handles = Vec::new();
@@ -76,7 +77,19 @@ impl AudioCapture {
             let h = std::thread::Builder::new()
                 .name("clipflow-audio".into())
                 .spawn(move || {
-                    imp::run(system, mic, gg_c, mg_c, md_c, stop_c, ring_c, gen_c, status_c, clock_c);
+                    imp::run(
+                        system,
+                        mic,
+                        gg_c,
+                        mg_c,
+                        md_c,
+                        stop_c,
+                        ring_c,
+                        gen_c,
+                        status_c,
+                        clock_c,
+                        performance_mode,
+                    );
                 })
                 .map_err(|e| RecorderError::Other(format!("audio thread: {e}")))?;
             handles.push(h);
@@ -107,10 +120,8 @@ mod imp {
         COINIT_MULTITHREADED,
     };
     use windows::Win32::System::Threading::{
-        GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_TIME_CRITICAL,
-        AvSetMmThreadCharacteristicsW, AvRevertMmThreadCharacteristics,
+        GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL, THREAD_PRIORITY_NORMAL,
     };
-    use windows::core::PCWSTR;
 
     use windows::Win32::UI::Shell::PropertiesSystem::PROPERTYKEY;
 
@@ -511,22 +522,23 @@ mod imp {
         generation: Arc<AtomicU32>,
         status: Arc<Mutex<Option<String>>>,
         clock: Arc<QpcClock>,
+        performance_mode: bool,
     ) {
         unsafe {
-            let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
-            let mut task_index = 0u32;
-            let class: Vec<u16> = "Pro Audio\0".encode_utf16().collect();
-            let mmcss_handle = AvSetMmThreadCharacteristicsW(
-                PCWSTR(class.as_ptr()),
-                &mut task_index,
-            )
-            .ok();
+            // Game Mode uses NORMAL priority and a 10 ms poll: the loop drains
+            // up to ~340 ms of audio, so it does not need to outrank the game.
+            // Outside Game Mode, above-normal keeps capture reliable.
+            let priority = if performance_mode {
+                THREAD_PRIORITY_NORMAL
+            } else {
+                THREAD_PRIORITY_ABOVE_NORMAL
+            };
+            let _ = SetThreadPriority(GetCurrentThread(), priority);
+
+            let poll_ms: u64 = if performance_mode { 10 } else { 8 };
 
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
             if MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET).is_err() {
-                if let Some(h) = mmcss_handle {
-                    let _ = AvRevertMmThreadCharacteristics(h);
-                }
                 *status.lock() = Some("Media Foundation failed to start".into());
                 CoUninitialize();
                 return;
@@ -598,7 +610,7 @@ mod imp {
                     // Nothing captured yet (device busy). Keep next_pts tracking live wall-clock
                     // so when devices arrive, audio does not start at t=0.
                     next_pts = clock.now_hns();
-                    std::thread::sleep(std::time::Duration::from_millis(8));
+                    std::thread::sleep(std::time::Duration::from_millis(poll_ms));
                     continue;
                 }
 
@@ -691,7 +703,7 @@ mod imp {
                 }
 
                 let Some(enc) = encoder.as_ref() else {
-                    std::thread::sleep(std::time::Duration::from_millis(8));
+                    std::thread::sleep(std::time::Duration::from_millis(poll_ms));
                     continue;
                 };
 
@@ -720,12 +732,9 @@ mod imp {
                     });
                 }
 
-                std::thread::sleep(std::time::Duration::from_millis(8));
+                std::thread::sleep(std::time::Duration::from_millis(poll_ms));
             }
 
-            if let Some(h) = mmcss_handle {
-                let _ = AvRevertMmThreadCharacteristics(h);
-            }
             if let Some(ep) = loopback.as_ref() {
                 let _ = ep.client.Stop();
             }
@@ -772,6 +781,7 @@ mod imp {
         generation: Arc<AtomicU32>,
         _status: Arc<Mutex<Option<String>>>,
         _clock: Arc<QpcClock>,
+        _performance_mode: bool,
     ) {
         // 21.3 ms AAC frames of silence keep the muxer path exercised.
         let frame_hns = 1024 * HNS_PER_SECOND / SAMPLE_RATE as i64;

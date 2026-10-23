@@ -12,10 +12,10 @@ export function Row({
   children: ReactNode;
 }) {
   return (
-    <div className="flex items-start justify-between gap-4 border-b border-[#303744] py-3.5 last:border-0">
+    <div className="flex items-start justify-between gap-4 border-b border-[#d3d9e0] py-3.5 last:border-0">
       <div className="min-w-0 pr-2">
-        <div className="text-[13px] font-medium text-[#e8ecf2]">{label}</div>
-        {hint && <div className="mt-0.5 text-[12px] leading-normal text-[#a0a9b6]">{hint}</div>}
+        <div className="text-[13px] font-medium text-[#0f172a]">{label}</div>
+        {hint && <div className="mt-0.5 text-[12px] leading-normal text-[#475569]">{hint}</div>}
       </div>
       <div className="shrink-0">{children}</div>
     </div>
@@ -31,14 +31,14 @@ export function Toggle({ on, onClick, label }: { on: boolean; onClick: () => voi
       aria-label={label}
       onClick={onClick}
       className={cn(
-        "group relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#64b5f6] focus-visible:ring-offset-2 focus-visible:ring-offset-[#111318]",
-        on ? "bg-[#64b5f6] hover:bg-[#90caf9]" : "bg-[#2a3340] hover:bg-[#343e4e]",
+        "group relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out",
+        on ? "bg-[#2563eb] hover:bg-[#1d4ed8]" : "bg-[#94a3b8] hover:bg-[#64748b]",
       )}
     >
       <span
         aria-hidden="true"
         className={cn(
-          "pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow-sm ring-0 transition-transform duration-200 ease-in-out",
+          "pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow-sm ring-1 ring-black/10 transition-transform duration-200 ease-in-out",
           on ? "translate-x-5" : "translate-x-0",
         )}
       />

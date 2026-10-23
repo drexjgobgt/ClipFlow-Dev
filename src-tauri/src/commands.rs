@@ -89,7 +89,7 @@ pub async fn start_replay_buffer(
     buffer_seconds: u32,
     target_fps: u32,
 ) -> Result<EngineStats, String> {
-    let mut cfg = {
+    let cfg = {
         let mut s = state.settings.write();
         s.buffer_seconds = buffer_seconds.clamp(5, 600);
         s.target_fps = target_fps.clamp(24, 240);
@@ -97,8 +97,9 @@ pub async fn start_replay_buffer(
         s.to_recorder_config()
     };
     std::fs::create_dir_all(&cfg.output_dir).map_err(|e| e.to_string())?;
-    cfg.buffer_seconds = buffer_seconds.clamp(5, 600);
-    cfg.target_fps = target_fps.clamp(24, 240);
+    // `to_recorder_config()` already applied the Game Mode caps. Do not
+    // overwrite `cfg.target_fps` here: the old code copied the raw UI value and
+    // silently bypassed the 60 FPS cap on ARM / APPLY & RESTART.
 
     let engine = Arc::clone(&state.engine);
     let stats = tauri::async_runtime::spawn_blocking(move || engine.start(cfg))
@@ -188,7 +189,7 @@ pub fn resolve_game_folder(state: &AppState, game_override: Option<&str>) -> Opt
     if let Some(g) = game_override {
         return game_folder_name(g);
     }
-    crate::foreground::get_foreground_game().and_then(|g| game_folder_name(&g.exe))
+    crate::foreground::foreground_exe().and_then(|exe| game_folder_name(&exe))
 }
 
 /// The single source of truth for the privacy gate: pause only when the
@@ -250,7 +251,6 @@ pub async fn save_instant_replay(
     state.engine.set_output_subfolder(game_folder.clone());
 
     let engine = Arc::clone(&state.engine);
-    let with_thumb = true;
 
     let result: ClipWriteResult = tauri::async_runtime::spawn_blocking(move || {
         engine.flush_to_disk(max_seconds).map_err(|e| e.to_string())
@@ -258,12 +258,10 @@ pub async fn save_instant_replay(
     .await
     .map_err(|e| format!("flush task panicked: {e}"))??;
 
-    let path = PathBuf::from(&result.path);
-    let thumbnail = if with_thumb {
-        library::extract_thumbnail(&path, (result.duration_seconds * 0.35).clamp(0.2, 6.0)).ok()
-    } else {
-        None
-    };
+    // Thumbnails are decoded lazily by the gallery. Doing a full MP4 seek +
+    // decode + PNG encode here used to stall the async runtime right after the
+    // player pressed the save hotkey, mid-match.
+    let thumbnail = None;
 
     let clip = ClipMetadata {
         id: format!("{}-{}", result.file_name, chrono::Utc::now().timestamp_millis()),
@@ -771,6 +769,7 @@ pub struct SettingsPatch {
     pub organize_by_game: Option<bool>,
     pub autosave_on_game_exit: Option<bool>,
     pub hud_enabled: Option<bool>,
+    pub performance_mode: Option<bool>,
     pub privacy_pause_when_unfocused: Option<bool>,
     pub game_volume: Option<u32>,
     pub mic_volume: Option<u32>,
@@ -890,16 +889,14 @@ pub fn update_settings(
         s.autosave_on_game_exit = v;
     }
     if let Some(v) = patch.hud_enabled {
+        // Deprecated: the HUD window is no longer shipped. Keep the field so
+        // older settings files round-trip cleanly.
         s.hud_enabled = v;
-        if let Some(hud) = app.get_webview_window("hud") {
-            if v {
-                let _ = hud.show();
-                let _ = set_window_excluded_from_capture(&hud, true);
-            } else {
-                let _ = set_window_excluded_from_capture(&hud, false);
-                let _ = hud.hide();
-            }
-        }
+    }
+    if let Some(v) = patch.performance_mode {
+        s.performance_mode = v;
+        // Capture caps (1080p/60 + encoder tuning) are read when the engine
+        // starts. The deck offers APPLY & RESTART for an immediate switch.
     }
     if let Some(v) = patch.privacy_pause_when_unfocused {
         s.privacy_pause_when_unfocused = v;

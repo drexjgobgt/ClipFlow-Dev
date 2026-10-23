@@ -1,25 +1,25 @@
 @import "tailwindcss";
 
 @theme {
-  --color-app-bg: #111318;
-  --color-surface: #191d24;
-  --color-surface-elevated: #222832;
-  --color-surface-hover: #1f2530;
-  --color-border: #303744;
-  --color-border-subtle: #242b36;
-  --color-border-focus: #64b5f6;
-  --color-text-primary: #e8ecf2;
-  --color-text-secondary: #a0a9b6;
-  --color-text-muted: #727e90;
-  --color-accent: #64b5f6;
-  --color-accent-hover: #90caf9;
-  --color-accent-subtle: rgba(100, 181, 246, 0.12);
-  --color-success: #34d399;
-  --color-success-bg: rgba(52, 211, 153, 0.12);
-  --color-warning: #f59e0b;
-  --color-warning-bg: rgba(245, 158, 11, 0.12);
-  --color-error: #f87171;
-  --color-error-bg: rgba(248, 113, 113, 0.12);
+  --color-app-bg: #e9ecef;
+  --color-surface: #f8f9fa;
+  --color-surface-elevated: #eceff2;
+  --color-surface-hover: #dfe5ec;
+  --color-border: #d3d9e0;
+  --color-border-subtle: #e2e7ec;
+  --color-border-focus: #2563eb;
+  --color-text-primary: #0f172a;
+  --color-text-secondary: #475569;
+  --color-text-muted: #64748b;
+  --color-accent: #2563eb;
+  --color-accent-hover: #1d4ed8;
+  --color-accent-subtle: rgba(37, 99, 235, 0.08);
+  --color-success: #059669;
+  --color-success-bg: rgba(5, 150, 105, 0.1);
+  --color-warning: #d97706;
+  --color-warning-bg: rgba(217, 119, 6, 0.1);
+  --color-error: #dc2626;
+  --color-error-bg: rgba(220, 38, 38, 0.08);
   --font-sans: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   --font-mono: "Cascadia Code", "JetBrains Mono", Consolas, ui-monospace, SFMono-Regular, monospace;
 }
@@ -31,10 +31,14 @@
     height: 100%;
   }
 
+  html {
+    color-scheme: light;
+  }
+
   body {
     margin: 0;
-    background: #111318;
-    color: #e8ecf2;
+    background: #e9ecef;
+    color: #0f172a;
     font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
@@ -43,38 +47,42 @@
   }
 
   ::selection {
-    background: rgba(100, 181, 246, 0.3);
-    color: #ffffff;
+    background: rgba(37, 99, 235, 0.2);
+    color: #0f172a;
   }
 
   ::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
+    width: 10px;
+    height: 10px;
   }
   ::-webkit-scrollbar-track {
     background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: #2a323f;
-    border-radius: 4px;
-    border: 2px solid #111318;
+    background: #bcc5cf;
+    border-radius: 6px;
+    border: 3px solid #e9ecef;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: #384354;
+    background: #94a3b8;
   }
 }
 
-@layer utilities {
+@layer components {
   .panel {
-    background: #191d24;
-    border: 1px solid #303744;
-    box-shadow: 0 4px 16px -4px rgba(0, 0, 0, 0.45);
+    background: #f8f9fa;
+    border: 1px solid #d3d9e0;
+    box-shadow:
+      0 1px 2px rgba(15, 23, 42, 0.04),
+      0 8px 24px -16px rgba(15, 23, 42, 0.18);
   }
 
   .panel-elevated {
-    background: #222832;
-    border: 1px solid #384252;
-    box-shadow: 0 6px 20px -4px rgba(0, 0, 0, 0.55);
+    background: #f8f9fa;
+    border: 1px solid #cdd5df;
+    box-shadow:
+      0 2px 6px rgba(15, 23, 42, 0.05),
+      0 18px 42px -18px rgba(15, 23, 42, 0.22);
   }
 
   .panel-hover {
@@ -84,11 +92,15 @@
       box-shadow 150ms ease;
   }
   .panel-hover:hover {
-    border-color: #444f63;
-    background-color: #1d232c;
-    box-shadow: 0 8px 24px -6px rgba(0, 0, 0, 0.65);
+    border-color: #a9b6c7;
+    background-color: #f8f9fa;
+    box-shadow:
+      0 2px 8px rgba(15, 23, 42, 0.06),
+      0 16px 30px -20px rgba(15, 23, 42, 0.25);
   }
+}
 
+@layer utilities {
   .drag-region {
     -webkit-app-region: drag;
   }
@@ -98,7 +110,7 @@
 
   /* Accessible focus indicators across keyboard navigation */
   :focus-visible {
-    outline: 2px solid #64b5f6 !important;
+    outline: 2px solid #2563eb !important;
     outline-offset: 1px !important;
   }
 
@@ -113,6 +125,11 @@
   }
   .animate-rec {
     animation: pulse-rec 1.8s ease-in-out infinite;
+  }
+  /* The deck is hidden/unfocused (a game is on screen): stop burning even the
+     compositor animation on the shared iGPU. */
+  html[data-deck-idle="true"] .animate-rec {
+    animation-play-state: paused;
   }
 
   @keyframes pop-in {
@@ -159,43 +176,43 @@
   input[type="range"].cf-range {
     -webkit-appearance: none;
     appearance: none;
-    height: 4px;
-    border-radius: 2px;
-    background: #252d3a;
+    height: 5px;
+    border-radius: 3px;
+    background: #cdd5df;
     outline: none;
     cursor: pointer;
   }
   input[type="range"].cf-range:hover {
-    background: #2e3848;
+    background: #bcc5cf;
   }
   input[type="range"].cf-range::-webkit-slider-thumb {
     -webkit-appearance: none;
     appearance: none;
-    width: 14px;
-    height: 14px;
+    width: 16px;
+    height: 16px;
     border-radius: 50%;
-    background: #e6eaf0;
-    border: 2px solid #171b22;
+    background: #f8f9fa;
+    border: 2px solid #2563eb;
     cursor: pointer;
-    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 1px 4px rgba(15, 23, 42, 0.25);
     transition: transform 120ms ease, background-color 120ms ease;
   }
   input[type="range"].cf-range::-webkit-slider-thumb:hover {
-    transform: scale(1.15);
-    background: #64b5f6;
+    transform: scale(1.12);
+    background: #dbeafe;
   }
   input[type="range"].cf-range::-moz-range-thumb {
-    width: 14px;
-    height: 14px;
+    width: 16px;
+    height: 16px;
     border-radius: 50%;
-    background: #e8ecf2;
-    border: 2px solid #191d24;
+    background: #f8f9fa;
+    border: 2px solid #2563eb;
     cursor: pointer;
-    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 1px 4px rgba(15, 23, 42, 0.25);
     transition: transform 120ms ease, background-color 120ms ease;
   }
   input[type="range"].cf-range::-moz-range-thumb:hover {
-    transform: scale(1.15);
-    background: #64b5f6;
+    transform: scale(1.12);
+    background: #dbeafe;
   }
 }

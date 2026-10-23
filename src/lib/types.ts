@@ -36,6 +36,10 @@ export interface EngineStats {
   target_fps: number;
   /** Configured encode bitrate (kbps). */
   bitrate_kbps: number;
+  /** Whether the running engine was started in Game Mode. */
+  performance_mode: boolean;
+  /** Adapter is an integrated GPU that shares memory with the CPU. */
+  integrated_gpu: boolean;
   capture_fps: number;
   buffer_seconds: number;
   buffered_seconds: number;
@@ -170,8 +174,11 @@ export interface AppSettings {
   organizeByGame: boolean;
   /** When the foreground game leaves focus, save its last 30 s automatically. */
   autosaveOnGameExit: boolean;
-  /** Show the always-on-top recording indicator while armed. */
-  hudEnabled: boolean;
+  /**
+   * Game Mode: cap capture at 1080p/60, tune the encoder for speed and keep
+   * background UI work quiet while a game is running. Applies on engine start.
+   */
+  performanceMode: boolean;
   /**
    * Privacy mode: when no game has the foreground focus the buffer stops
    * accumulating (and is cleared), so clips can never contain desktop content.
@@ -248,5 +255,5 @@ export const VENDOR_ACCENT: Record<EncoderVendor, string> = {
   "amd-amf": "#ff5f6d",
   "intel-qsv": "#4fc3ff",
   "media-foundation-software": "#ffc94f",
-  unavailable: "#8a8fa3",
+  unavailable: "#64748b",
 };

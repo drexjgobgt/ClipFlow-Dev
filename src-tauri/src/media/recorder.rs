@@ -132,6 +132,12 @@ pub struct RecorderConfig {
     /// 0 = native monitor resolution.
     pub width: u32,
     pub height: u32,
+    /// Game Mode downscale ceiling (0 = native). Keeps aspect ratio.
+    #[serde(default)]
+    pub max_height: u32,
+    /// Game Mode: cheap encoder tuning + gentler thread priorities.
+    #[serde(default)]
+    pub performance_mode: bool,
     pub bitrate_kbps: u32,
     pub codec: Codec,
     pub monitor_index: u32,
@@ -155,6 +161,8 @@ impl Default for RecorderConfig {
             target_fps: 60,
             width: 0,
             height: 0,
+            max_height: 0,
+            performance_mode: false,
             bitrate_kbps: 12_000,
             codec: Codec::H264,
             monitor_index: 0,
@@ -189,6 +197,12 @@ pub struct EngineStats {
     pub target_fps: u32,
     /// Configured encode bitrate (kbps) — shown on the HUD / deck.
     pub bitrate_kbps: u32,
+    /// Whether the running engine was started in Game Mode.
+    pub performance_mode: bool,
+    /// Adapter is an integrated GPU (shared memory with the CPU). On these,
+    /// Game Mode caps harder (720p/30) because the game and the encoder share
+    /// the same memory bandwidth and power budget.
+    pub integrated_gpu: bool,
     pub capture_fps: f32,
     pub buffer_seconds: u32,
     pub buffered_seconds: f32,
@@ -524,6 +538,11 @@ struct SharedState {
     encoder: RwLock<EncoderInfo>,
     dimensions: RwLock<(u32, u32)>,
     capture_fps: RwLock<f32>,
+    /// Effective values after Game Mode / integrated-GPU caps are applied by
+    /// the capture thread (0 = fall back to the configured value).
+    effective_target_fps: RwLock<u32>,
+    effective_bitrate_kbps: RwLock<u32>,
+    integrated_gpu: RwLock<bool>,
     audio_drift_ms: RwLock<f32>,
     /// Shared with the audio thread, hence the `Arc`.
     ring: Arc<Mutex<RollingRingBuffer>>,
@@ -548,6 +567,9 @@ impl SharedState {
             encoder: RwLock::new(EncoderInfo::default()),
             dimensions: RwLock::new((0, 0)),
             capture_fps: RwLock::new(0.0),
+            effective_target_fps: RwLock::new(0),
+            effective_bitrate_kbps: RwLock::new(0),
+            integrated_gpu: RwLock::new(false),
             audio_drift_ms: RwLock::new(0.0),
             ring: Arc::new(Mutex::new(RollingRingBuffer::new(
                 cfg.buffer_seconds,
@@ -573,6 +595,26 @@ fn ring_cap_mb(buffer_seconds: u32, bitrate_kbps: u32) -> usize {
     // cuts. Clamped so a mis-typed config can never eat the machine's RAM.
     let nominal = (buffer_seconds as u64 * bitrate_kbps as u64) / 8 / 1024;
     ((nominal as f64 * 1.6) as usize).clamp(24, 1536)
+}
+
+/// Heuristic for "the game and the encoder share one GPU". Dedicated VRAM is
+/// the strongest signal — integrated adapters report a tiny reserved amount
+/// (128-1024 MB) because the real framebuffer lives in system RAM. Name
+/// matching covers cases where the driver reports 0.
+pub fn is_integrated_gpu(adapter_name: &str, vram_mb: u64) -> bool {
+    if vram_mb > 0 && vram_mb < 2048 {
+        return true;
+    }
+    let n = adapter_name.to_ascii_lowercase();
+    // Intel Arc is discrete; do not downclock it.
+    if n.contains("arc") && vram_mb >= 2048 {
+        return false;
+    }
+    n.contains("intel")
+        || n.contains("iris")
+        || n.contains("uhd graphics")
+        || n.contains("hd graphics")
+        || (n.contains("radeon") && n.contains("graphics"))
 }
 
 pub fn default_output_dir() -> PathBuf {
@@ -655,8 +697,24 @@ impl CaptureEngine {
             encoder: self.shared.encoder.read().clone(),
             width: w,
             height: h,
-            target_fps: cfg.target_fps,
-            bitrate_kbps: cfg.bitrate_kbps,
+            target_fps: {
+                let effective = *self.shared.effective_target_fps.read();
+                if effective > 0 {
+                    effective
+                } else {
+                    cfg.target_fps
+                }
+            },
+            bitrate_kbps: {
+                let effective = *self.shared.effective_bitrate_kbps.read();
+                if effective > 0 {
+                    effective
+                } else {
+                    cfg.bitrate_kbps
+                }
+            },
+            performance_mode: cfg.performance_mode,
+            integrated_gpu: *self.shared.integrated_gpu.read(),
             capture_fps: *self.shared.capture_fps.read(),
             buffer_seconds: cfg.buffer_seconds,
             buffered_seconds: ring.span_seconds(),
@@ -707,6 +765,9 @@ impl CaptureEngine {
         self.shared.encode_ns_total.store(0, Ordering::Relaxed);
         self.shared.submit_ns_total.store(0, Ordering::Relaxed);
         self.shared.dropped_frames.store(0, Ordering::Relaxed);
+        *self.shared.effective_target_fps.write() = cfg.target_fps;
+        *self.shared.effective_bitrate_kbps.write() = cfg.bitrate_kbps;
+        *self.shared.integrated_gpu.write() = false;
         *self.shared.started_at.lock() = Some(Instant::now());
         self.shared.set_state(EngineState::Starting);
 
@@ -739,6 +800,7 @@ impl CaptureEngine {
                 Arc::clone(&self.shared.generation),
                 Arc::clone(&self.audio_error),
                 Arc::clone(&clock),
+                cfg.performance_mode,
             ) {
                 Ok(a) => *self.audio.lock() = Some(a),
                 Err(e) => {
@@ -758,10 +820,10 @@ impl CaptureEngine {
         let handle = std::thread::Builder::new()
             .name("clipflow-capture".into())
             .spawn(move || {
-                // The capture thread must never be starved by the game, but it
-                // must also never starve the game: "above normal" is the sweet
-                // spot measured across NVENC/AMF/QSV on 6-16 core parts.
-                set_thread_priority_above_normal();
+                // Game Mode runs the capture thread at NORMAL so the game's
+                // render thread always wins a scheduling race. Outside Game
+                // Mode, above-normal keeps capture reliable.
+                set_thread_priority(thread_cfg.performance_mode);
                 capture_thread_main(shared, thread_cfg, fmt, clock_c);
             })
             .map_err(|e| RecorderError::Other(format!("failed to spawn capture thread: {e}")))?;
@@ -800,6 +862,9 @@ impl CaptureEngine {
         self.shared.running.store(false, Ordering::Release);
         self.shared.set_state(EngineState::Idle);
         self.shared.ring.lock().clear();
+        *self.shared.effective_target_fps.write() = 0;
+        *self.shared.effective_bitrate_kbps.write() = 0;
+        *self.shared.integrated_gpu.write() = false;
     }
 
     pub fn set_buffer_seconds(&self, seconds: u32) {
@@ -933,7 +998,7 @@ impl Drop for CaptureEngine {
 mod win {
     use super::*;
     use windows::core::{Interface, PCWSTR, PWSTR};
-    use windows::Win32::Foundation::{HANDLE, HMODULE, TRUE, E_UNEXPECTED};
+    use windows::Win32::Foundation::{HMODULE, TRUE, E_UNEXPECTED};
     use windows::Win32::Graphics::Direct3D::{
         D3D_FEATURE_LEVEL, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1,
     };
@@ -945,7 +1010,8 @@ mod win {
     use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
     use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
     use windows::Win32::System::Threading::{
-        GetCurrentProcess, GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_HIGHEST,
+        GetCurrentProcess, GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL,
+        THREAD_PRIORITY_NORMAL,
     };
 
     pub(super) fn hr(e: windows::core::Error) -> RecorderError {
@@ -1166,6 +1232,7 @@ mod win {
             dst_w: u32,
             dst_h: u32,
             fps: u32,
+            performance_mode: bool,
         ) -> RResult<Self> {
             unsafe {
                 let vdevice: ID3D11VideoDevice = device.cast().map_err(hr)?;
@@ -1179,7 +1246,11 @@ mod win {
                     OutputFrameRate: DXGI_RATIONAL { Numerator: fps, Denominator: 1 },
                     OutputWidth: dst_w,
                     OutputHeight: dst_h,
-                    Usage: D3D11_VIDEO_USAGE_PLAYBACK_NORMAL,
+                    Usage: if performance_mode {
+                        D3D11_VIDEO_USAGE_OPTIMAL_SPEED
+                    } else {
+                        D3D11_VIDEO_USAGE_PLAYBACK_NORMAL
+                    },
                 };
 
                 let enumerator = vdevice
@@ -1192,10 +1263,10 @@ mod win {
                 // Game capture is full-range RGB going to limited-range NV12;
                 // getting this wrong is the classic "washed out clip" bug.
                 let in_cs = D3D11_VIDEO_PROCESSOR_COLOR_SPACE {
-                    _bitfield: 0x0000_0001, // Usage = playback, RGB_Range = full
+                    _bitfield: 0x0000_0001, // Usage = video processing, RGB_Range = full
                 };
                 let out_cs = D3D11_VIDEO_PROCESSOR_COLOR_SPACE {
-                    _bitfield: 0x0000_0004, // Nominal_Range = 16-235, BT.709
+                    _bitfield: 0x0000_0004, // YCbCr_Matrix = BT.709, nominal range 16-235
                 };
                 vcontext.VideoProcessorSetStreamColorSpace(&processor, 0, &in_cs);
                 vcontext.VideoProcessorSetOutputColorSpace(&processor, &out_cs);
@@ -1342,6 +1413,7 @@ mod win {
             fps: u32,
             bitrate_kbps: u32,
             codec: Codec,
+            performance_mode: bool,
             adapter_name: &str,
             vram_mb: u64,
         ) -> RResult<Self> {
@@ -1418,6 +1490,12 @@ mod win {
                         (t, "Microsoft H.264 Encoder MFT".to_string(), false)
                     }
                 };
+
+                if performance_mode && !hardware {
+                    log::warn!(
+                        "[clipflow] Game Mode is on but only a software H.264 encoder is available; capture may compete with the game for CPU"
+                    );
+                }
 
                 // 3. Async unlock + low latency BEFORE any type negotiation.
                 let attrs = transform.GetAttributes().ok();
@@ -1505,6 +1583,26 @@ mod win {
                     let _ = set_codec_u32(&codec_api, &CODECAPI_AVEncCommonLowLatency, 1);
                     let _ = set_codec_u32(&codec_api, &CODECAPI_AVEncMPVGOPSize, fps);
                     let _ = set_codec_u32(&codec_api, &CODECAPI_AVEncVideoMaxNumRefFrame, 1);
+                    // Game Mode: bias the encoder toward speed instead of the
+                    // vendor's default quality preset. Clips still look good at
+                    // 1080p, but the encoder spends noticeably less time on the
+                    // GPU while a game is running.
+                    if performance_mode {
+                        let _ = set_codec_u32(&codec_api, &CODECAPI_AVEncCommonQuality, 55);
+                        // The knob NVENC/AMF/QSV actually honour for the
+                        // speed/quality tradeoff (0 = quality, 100 = speed).
+                        let _ = set_codec_u32(
+                            &codec_api,
+                            &CODECAPI_AVEncCommonQualityVsSpeed,
+                            80,
+                        );
+                        // No B-frames: less encoder work and no reorder delay.
+                        let _ = set_codec_u32(
+                            &codec_api,
+                            &CODECAPI_AVEncMPVDefaultBPictureCount,
+                            0,
+                        );
+                    }
                 }
 
                 let events: Option<IMFMediaEventGenerator> = if async_mode {
@@ -1956,31 +2054,27 @@ mod win {
         }
     }
 
-    pub(super) fn boost_thread() {
+    pub(super) fn boost_thread(performance_mode: bool) {
+        // In Game Mode the capture thread deliberately runs at NORMAL so it
+        // cannot outrank the game's render thread. A missed duplicate frame is
+        // harmless in a replay ring; a 1% low spike is not. With Game Mode off
+        // we keep the old above-normal hint for reliability.
+        let priority = if performance_mode {
+            THREAD_PRIORITY_NORMAL
+        } else {
+            THREAD_PRIORITY_ABOVE_NORMAL
+        };
         unsafe {
-            let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
-        }
-        // MMCSS "Capture" class prevents the scheduler from parking us while a
-        // full-screen game hogs the CPU.
-        unsafe {
-            let mut task_index = 0u32;
-            let class: Vec<u16> = "Capture\0".encode_utf16().collect();
-            let h: HANDLE = AvSetMmThreadCharacteristicsW(
-                PCWSTR(class.as_ptr()),
-                &mut task_index,
-            )
-            .unwrap_or_default();
-            let _ = h; // released implicitly at process exit
+            let _ = SetThreadPriority(GetCurrentThread(), priority);
         }
     }
 
     use std::os::windows::ffi::OsStrExt;
-    use windows::Win32::System::Threading::AvSetMmThreadCharacteristicsW;
 
     // ------------------------------------------------------- capture loop
     pub(super) fn capture_loop(
         shared: Arc<SharedState>,
-        cfg: RecorderConfig,
+        mut cfg: RecorderConfig,
         fmt: Arc<Mutex<Option<VideoFormatHeader>>>,
         clock: Arc<super::QpcClock>,
     ) {
@@ -2008,8 +2102,42 @@ mod win {
                 }
             };
 
+            // Integrated GPUs (Intel Iris Xe/UHD, AMD Radeon Graphics) share
+            // memory bandwidth and the power/thermal budget with the game, so
+            // Game Mode caps harder than on a discrete NVENC/AMF card. 720p30
+            // roughly halves the per-frame bandwidth the encoder steals from
+            // Valorant and friends while keeping instant-replay clips readable.
+            let integrated_gpu = is_integrated_gpu(&gfx.adapter_name, gfx.vram_mb);
+            *shared.integrated_gpu.write() = integrated_gpu;
+            if integrated_gpu && cfg.performance_mode {
+                cfg.target_fps = cfg.target_fps.min(30);
+                cfg.max_height = if cfg.max_height == 0 {
+                    720
+                } else {
+                    cfg.max_height.min(720)
+                };
+                cfg.bitrate_kbps = cfg.bitrate_kbps.min(6_000);
+            }
+            *shared.effective_target_fps.write() = cfg.target_fps;
+            *shared.effective_bitrate_kbps.write() = cfg.bitrate_kbps;
+
             let dst_w = if cfg.width == 0 { gfx.src_width } else { cfg.width } & !1;
             let dst_h = if cfg.height == 0 { gfx.src_height } else { cfg.height } & !1;
+            // Game Mode: downscale >1080p monitors without breaking aspect
+            // ratio. 1080p60 NVENC/AMF/QSV is effectively free on modern GPUs
+            // while 1440p/4K capture is what usually shows up as a game stutter.
+            let (dst_w, dst_h) = if cfg.max_height > 0
+                && cfg.max_height < dst_h
+                && cfg.width == 0
+                && cfg.height == 0
+            {
+                let h = (cfg.max_height & !1).max(2);
+                let w = (((gfx.src_width as u64 * h as u64) / gfx.src_height.max(1) as u64) as u32)
+                    & !1;
+                (w.max(2), h.max(2))
+            } else {
+                (dst_w, dst_h)
+            };
 
             let converter = match ColorConverter::new(
                 &gfx.device,
@@ -2020,6 +2148,7 @@ mod win {
                 dst_w,
                 dst_h,
                 cfg.target_fps,
+                cfg.performance_mode,
             ) {
                 Ok(c) => c,
                 Err(e) => {
@@ -2037,6 +2166,7 @@ mod win {
                 cfg.target_fps,
                 cfg.bitrate_kbps,
                 cfg.codec,
+                cfg.performance_mode,
                 &gfx.adapter_name,
                 gfx.vram_mb,
             ) {
@@ -2087,23 +2217,22 @@ mod win {
                     continue 'outer;
                 }
 
-                // Frame pacing: sleep to the deadline, then spin the last 0.3 ms
-                // for jitter under 0.1 ms without burning a whole core.
+                // Frame pacing: a plain high-resolution sleep. The old loop
+                // spun the last 0.4 ms of every frame, which kept a CPU core
+                // hot and stole scheduler time from CPU-bound games such as
+                // Valorant. timeBeginPeriod(1) already gives ~1 ms accuracy,
+                // more than enough for a 16.6 ms replay frame.
                 let now = Instant::now();
                 if now < next_deadline {
-                    let remaining = next_deadline - now;
-                    if remaining > Duration::from_micros(1500) {
-                        std::thread::sleep(remaining - Duration::from_micros(400));
-                    }
-                    while Instant::now() < next_deadline {
-                        std::hint::spin_loop();
-                    }
+                    std::thread::sleep(next_deadline - now);
                 }
                 next_deadline += frame_interval;
-                if Instant::now() > next_deadline + frame_interval * 4 {
-                    // We fell badly behind (machine suspended, GPU stalled):
-                    // resync rather than trying to catch up frame by frame.
-                    next_deadline = Instant::now() + frame_interval;
+                let after_frame = Instant::now();
+                if after_frame >= next_deadline {
+                    // We are already late for the *next* frame (a hitch or a
+                    // slow encode). Resync once instead of burning through a
+                    // burst of near-identical frames trying to catch up.
+                    next_deadline = after_frame + frame_interval;
                     shared.dropped_frames.fetch_add(1, Ordering::Relaxed);
                 }
 
@@ -2249,7 +2378,7 @@ mod sim {
         18 * 1024 * 1024
     }
 
-    pub(super) fn boost_thread() {}
+    pub(super) fn boost_thread(_performance_mode: bool) {}
 
     pub(super) fn mux(
         path: &Path,
@@ -2382,8 +2511,8 @@ pub fn process_rss_bytes() -> u64 {
     platform::rss_bytes()
 }
 
-fn set_thread_priority_above_normal() {
-    platform::boost_thread();
+fn set_thread_priority(performance_mode: bool) {
+    platform::boost_thread(performance_mode);
 }
 
 // ---------------------------------------------------------------------------
@@ -2464,5 +2593,35 @@ pub fn enumerate_monitors() -> Vec<MonitorInfo> {
             primary: true,
             adapter: "Virtual Adapter".into(),
         }]
+    }
+}
+
+#[cfg(test)]
+mod integrated_gpu_tests {
+    use super::is_integrated_gpu;
+
+    #[test]
+    fn intel_iris_xe_is_integrated() {
+        assert!(is_integrated_gpu("Intel(R) Iris(R) Xe Graphics", 128));
+    }
+
+    #[test]
+    fn amd_igpu_low_vram_is_integrated() {
+        assert!(is_integrated_gpu("AMD Radeon(TM) Graphics", 512));
+    }
+
+    #[test]
+    fn nvidia_discrete_is_not_integrated() {
+        assert!(!is_integrated_gpu("NVIDIA GeForce RTX 4070", 12288));
+    }
+
+    #[test]
+    fn intel_arc_discrete_is_not_integrated() {
+        assert!(!is_integrated_gpu("Intel(R) Arc(TM) A770 Graphics", 8192));
+    }
+
+    #[test]
+    fn amd_discrete_is_not_integrated() {
+        assert!(!is_integrated_gpu("AMD Radeon RX 6800 XT", 16384));
     }
 }

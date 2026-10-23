@@ -340,6 +340,8 @@ export class SimEngine {
       height: 1080,
       target_fps: this.targetFps,
       bitrate_kbps: this.bitrateKbps,
+      performance_mode: true,
+      integrated_gpu: false,
       capture_fps: this.running ? this.measuredFps || this.targetFps : 0,
       buffer_seconds: this.bufferSeconds,
       buffered_seconds: buffered,

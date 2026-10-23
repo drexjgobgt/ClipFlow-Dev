@@ -545,7 +545,7 @@ dependencies = [
 
 [[package]]
 name = "clipflow"
-version = "1.4.2"
+version = "1.5.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",

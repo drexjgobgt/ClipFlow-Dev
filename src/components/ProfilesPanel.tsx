@@ -49,22 +49,22 @@ function ProfileCard({
       className={cn(
         "flex items-center justify-between gap-3 rounded-lg border px-3.5 py-2.5 transition-colors duration-150",
         active
-          ? "border-[#64b5f6]/50 bg-[#1c2432]"
-          : "border-[#303744] bg-[#191d24] hover:border-[#384252]",
+          ? "border-[#2563eb]/50 bg-[#e3e7eb]"
+          : "border-[#d3d9e0] bg-[#f8f9fa] hover:border-[#bcc5cf]",
       )}
     >
       <div className="min-w-0 pr-2">
         <div className="flex items-center gap-2">
-          <span className="truncate text-[13px] font-medium text-[#e8ecf2]">
+          <span className="truncate text-[13px] font-medium text-[#0f172a]">
             {profile.name}
           </span>
           {active && (
-            <span className="rounded border border-[#64b5f6]/30 bg-[#64b5f6]/10 px-1.5 py-0.5 font-mono text-[9px] font-semibold tracking-wide text-[#64b5f6]">
+            <span className="rounded border border-[#2563eb]/30 bg-[#2563eb]/10 px-1.5 py-0.5 font-mono text-[9px] font-semibold tracking-wide text-[#2563eb]">
               Active
             </span>
           )}
         </div>
-        <div className="mt-0.5 truncate font-mono text-[11px] text-[#a0a9b6]">
+        <div className="mt-0.5 truncate font-mono text-[11px] text-[#475569]">
           {profile.bufferSeconds >= 60
             ? `${profile.bufferSeconds / 60}m`
             : `${profile.bufferSeconds}s`}{" "}
@@ -79,8 +79,8 @@ function ProfileCard({
           className={cn(
             "rounded border px-2.5 py-1 text-[11px] font-medium tracking-wide transition-colors",
             active
-              ? "border-[#64b5f6]/60 bg-[#64b5f6]/20 text-[#64b5f6] hover:bg-[#64b5f6]/30"
-              : "border-[#384252] bg-[#222832] text-[#e8ecf2] hover:border-[#64b5f6] hover:text-white",
+              ? "border-[#2563eb]/60 bg-[#2563eb]/20 text-[#2563eb] hover:bg-[#2563eb]/30"
+              : "border-[#bcc5cf] bg-[#eceff2] text-[#0f172a] hover:border-[#2563eb] hover:text-slate-900",
           )}
         >
           {active ? "Re-apply" : "Apply"}
@@ -89,7 +89,7 @@ function ProfileCard({
           type="button"
           onClick={onEdit}
           title="Edit profile parameters"
-          className="rounded border border-[#384252] bg-[#222832] px-2 py-1 text-[11px] text-[#a0a9b6] hover:border-[#444f63] hover:text-[#e8ecf2]"
+          className="rounded border border-[#bcc5cf] bg-[#eceff2] px-2 py-1 text-[11px] text-[#475569] hover:border-[#a9b6c7] hover:text-slate-900"
         >
           Edit
         </button>
@@ -98,7 +98,7 @@ function ProfileCard({
           onClick={onDelete}
           disabled={!canDelete}
           title="Delete profile"
-          className="rounded border border-[#384252] bg-[#222832] px-2 py-1 text-[11px] text-[#a0a9b6] hover:border-red-400/50 hover:text-red-300 disabled:opacity-30"
+          className="rounded border border-[#bcc5cf] bg-[#eceff2] px-2 py-1 text-[11px] text-[#475569] hover:border-red-400/50 hover:text-red-600 disabled:opacity-30"
         >
           ✕
         </button>
@@ -137,27 +137,27 @@ function ProfileEditor({
   };
 
   const selectCls =
-    "rounded border border-[#303744] bg-[#111318] px-2 py-1 font-mono text-[11px] text-[#e8ecf2] outline-none focus:border-[#64b5f6]";
+    "rounded border border-[#d3d9e0] bg-[#e9ecef] px-2 py-1 font-mono text-[11px] text-[#0f172a] outline-none focus:border-[#2563eb]";
 
   return (
-    <div className="mt-2.5 rounded-lg border border-[#384252] bg-[#191d24] p-3.5">
+    <div className="mt-2.5 rounded-lg border border-[#bcc5cf] bg-[#f8f9fa] p-3.5">
       <div className="flex items-center gap-2">
         <input
           name="profile-name"
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="Profile name (e.g. Competitive FPS)"
-          className="flex-1 rounded border border-[#303744] bg-[#111318] px-2.5 py-1.5 text-[12px] text-[#e8ecf2] outline-none placeholder:text-[#727e90] focus:border-[#64b5f6]"
+          className="flex-1 rounded border border-[#d3d9e0] bg-[#e9ecef] px-2.5 py-1.5 text-[12px] text-[#0f172a] outline-none placeholder:text-[#475569] focus:border-[#2563eb]"
         />
         {profile.id && (
-          <span className="shrink-0 font-mono text-[10px] text-[#727e90]">
+          <span className="shrink-0 font-mono text-[10px] text-[#475569]">
             {profile.id}
           </span>
         )}
       </div>
 
       <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
-        <label className="flex items-center gap-1.5 font-mono text-[11px] text-[#a0a9b6]">
+        <label className="flex items-center gap-1.5 font-mono text-[11px] text-[#475569]">
           Buffer
           <select
             name="profile-buffer"
@@ -166,14 +166,14 @@ function ProfileEditor({
             className={selectCls}
           >
             {[15, 30, 60, 120, 300].map((s) => (
-              <option key={s} value={s} className="bg-[#111318]">
+              <option key={s} value={s} className="bg-[#e9ecef]">
                 {s >= 60 ? `${s / 60}m` : `${s}s`}
               </option>
             ))}
           </select>
         </label>
 
-        <label className="flex items-center gap-1.5 font-mono text-[11px] text-[#a0a9b6]">
+        <label className="flex items-center gap-1.5 font-mono text-[11px] text-[#475569]">
           FPS
           <select
             name="profile-fps"
@@ -182,14 +182,14 @@ function ProfileEditor({
             className={selectCls}
           >
             {[30, 60, 120, 144].map((f) => (
-              <option key={f} value={f} className="bg-[#111318]">
+              <option key={f} value={f} className="bg-[#e9ecef]">
                 {f}
               </option>
             ))}
           </select>
         </label>
 
-        <label className="flex items-center gap-1.5 font-mono text-[11px] text-[#a0a9b6]">
+        <label className="flex items-center gap-1.5 font-mono text-[11px] text-[#475569]">
           Codec
           <select
             name="profile-codec"
@@ -197,12 +197,12 @@ function ProfileEditor({
             onChange={(e) => setCodec(e.target.value as "h264" | "hevc")}
             className={selectCls}
           >
-            <option value="h264" className="bg-[#111318]">H.264</option>
-            <option value="hevc" className="bg-[#111318]">HEVC (H.265)</option>
+            <option value="h264" className="bg-[#e9ecef]">H.264</option>
+            <option value="hevc" className="bg-[#e9ecef]">HEVC (H.265)</option>
           </select>
         </label>
 
-        <label className="flex items-center gap-1.5 font-mono text-[11px] text-[#a0a9b6]">
+        <label className="flex items-center gap-1.5 font-mono text-[11px] text-[#475569]">
           Bitrate
           <select
             name="profile-bitrate"
@@ -211,7 +211,7 @@ function ProfileEditor({
             className={selectCls}
           >
             {[8_000, 12_000, 20_000, 30_000, 50_000].map((b) => (
-              <option key={b} value={b} className="bg-[#111318]">
+              <option key={b} value={b} className="bg-[#e9ecef]">
                 {(b / 1000).toFixed(0)} Mb/s
               </option>
             ))}
@@ -219,11 +219,11 @@ function ProfileEditor({
         </label>
       </div>
 
-      <div className="mt-3.5 flex items-center justify-end gap-2 border-t border-[#303744] pt-2.5">
+      <div className="mt-3.5 flex items-center justify-end gap-2 border-t border-[#d3d9e0] pt-2.5">
         <button
           type="button"
           onClick={onCancel}
-          className="rounded border border-[#384252] bg-[#222832] px-3 py-1 text-[11px] text-[#a0a9b6] hover:text-[#e8ecf2]"
+          className="rounded border border-[#bcc5cf] bg-[#eceff2] px-3 py-1 text-[11px] text-[#475569] hover:text-slate-900"
         >
           Cancel
         </button>
@@ -231,7 +231,7 @@ function ProfileEditor({
           type="button"
           onClick={save}
           disabled={!name.trim()}
-          className="rounded border border-[#64b5f6] bg-[#64b5f6] px-3 py-1 text-[11px] font-medium text-[#0f172a] hover:bg-[#90caf9] disabled:opacity-40"
+          className="rounded border border-[#2563eb] bg-[#2563eb] px-3 py-1 text-[11px] font-medium text-white hover:bg-[#1d4ed8] disabled:opacity-40"
         >
           Save Profile
         </button>
@@ -255,20 +255,20 @@ function MapRow({
   onRemove: (index: number) => void;
 }) {
   return (
-    <div className="flex items-center gap-2 rounded border border-[#303744] bg-[#191d24] p-2">
+    <div className="flex items-center gap-2 rounded border border-[#d3d9e0] bg-[#f8f9fa] p-2">
       <input
         value={entry.exeName}
         onChange={(e) => onChange(index, { ...entry, exeName: e.target.value })}
         placeholder="executable.exe (e.g. valorant.exe)"
-        className="flex-1 rounded border border-[#303744] bg-[#111318] px-2 py-1 font-mono text-[11px] text-[#e8ecf2] outline-none placeholder:text-[#727e90] focus:border-[#64b5f6]"
+        className="flex-1 rounded border border-[#d3d9e0] bg-[#e9ecef] px-2 py-1 font-mono text-[11px] text-[#0f172a] outline-none placeholder:text-[#475569] focus:border-[#2563eb]"
       />
       <select
         value={entry.profileId}
         onChange={(e) => onChange(index, { ...entry, profileId: e.target.value })}
-        className="rounded border border-[#303744] bg-[#111318] px-2 py-1 text-[11px] text-[#e8ecf2] outline-none focus:border-[#64b5f6]"
+        className="rounded border border-[#d3d9e0] bg-[#e9ecef] px-2 py-1 text-[11px] text-[#0f172a] outline-none focus:border-[#2563eb]"
       >
         {profiles.map((p) => (
-          <option key={p.id} value={p.id} className="bg-[#111318]">
+          <option key={p.id} value={p.id} className="bg-[#e9ecef]">
             {p.name}
           </option>
         ))}
@@ -277,7 +277,7 @@ function MapRow({
         type="button"
         onClick={() => onRemove(index)}
         title="Remove mapping"
-        className="rounded border border-[#384252] bg-[#222832] px-2 py-1 text-[11px] text-[#a0a9b6] hover:border-red-400 hover:text-red-300"
+        className="rounded border border-[#bcc5cf] bg-[#eceff2] px-2 py-1 text-[11px] text-[#475569] hover:border-red-400 hover:text-red-600"
       >
         ✕
       </button>
@@ -317,11 +317,11 @@ export default function ProfilesPanel({
 
   return (
     <section className="panel rounded-xl p-5 space-y-4">
-      <div className="border-b border-[#303744] pb-3">
-        <h3 className="text-[13px] font-semibold text-[#e8ecf2]">
+      <div className="border-b border-[#d3d9e0] pb-3">
+        <h3 className="text-[13px] font-semibold text-[#0f172a]">
           Game Profiles
         </h3>
-        <p className="text-[11px] text-[#a0a9b6] mt-0.5">
+        <p className="text-[11px] text-[#475569] mt-0.5">
           Tune buffer duration, FPS, and bitrate presets per game with automatic switching
         </p>
       </div>
@@ -343,14 +343,14 @@ export default function ProfilesPanel({
           hint={foreground ? foreground.title : "Desktop or unmapped window"}
         >
           <div className="flex items-center gap-2">
-            <span className="rounded border border-[#384252] bg-[#191d24] px-2 py-1 font-mono text-[11px] text-[#e8ecf2]">
+            <span className="rounded border border-[#bcc5cf] bg-[#f8f9fa] px-2 py-1 font-mono text-[11px] text-[#0f172a]">
               {foreground ? foreground.exe : "—"}
             </span>
             <button
               type="button"
               onClick={onRefreshForeground}
               title="Re-check the focused window now"
-              className="rounded border border-[#384252] bg-[#222832] px-2 py-1 text-[11px] text-[#a0a9b6] hover:text-[#e8ecf2]"
+              className="rounded border border-[#bcc5cf] bg-[#eceff2] px-2 py-1 text-[11px] text-[#475569] hover:text-slate-900"
             >
               Detect
             </button>
@@ -395,17 +395,17 @@ export default function ProfilesPanel({
             codec: "h264",
           })
         }
-        className="w-full rounded-lg border border-[#384252] bg-[#222832] px-3 py-2 text-[12px] font-medium text-[#e8ecf2] transition-colors hover:border-[#64b5f6]/50 hover:bg-[#2a3340]"
+        className="w-full rounded-lg border border-[#bcc5cf] bg-[#eceff2] px-3 py-2 text-[12px] font-medium text-[#0f172a] transition-colors hover:border-[#2563eb]/50 hover:bg-[#bcc5cf]"
       >
         + New Preset
       </button>
 
-      <div className="mt-5 border-t border-[#303744] pt-3.5">
-        <div className="text-[11px] font-semibold tracking-wide text-[#a0a9b6]">
+      <div className="mt-5 border-t border-[#d3d9e0] pt-3.5">
+        <div className="text-[11px] font-semibold tracking-wide text-[#475569]">
           Game Detection Mappings
         </div>
-        <p className="mt-1 text-[11px] leading-relaxed text-[#727e90]">
-          Map an executable file name (e.g. <span className="font-mono text-[#e8ecf2]">valorant.exe</span>) to
+        <p className="mt-1 text-[11px] leading-relaxed text-[#475569]">
+          Map an executable file name (e.g. <span className="font-mono text-[#0f172a]">valorant.exe</span>) to
           a profile preset.
         </p>
 
@@ -423,7 +423,7 @@ export default function ProfilesPanel({
           <button
             type="button"
             onClick={addMapRow}
-            className="w-full rounded border border-[#303744] bg-[#191d24] px-3 py-1.5 text-[11px] text-[#a0a9b6] hover:border-[#384252] hover:text-[#e8ecf2]"
+            className="w-full rounded border border-[#d3d9e0] bg-[#f8f9fa] px-3 py-1.5 text-[11px] text-[#475569] hover:border-[#bcc5cf] hover:text-slate-900"
           >
             + Add Game Mapping
           </button>

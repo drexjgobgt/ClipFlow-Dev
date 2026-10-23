@@ -178,12 +178,10 @@ pub fn trigger_save(app: AppHandle) {
 
         match result {
             Ok(Ok((write, focused))) => {
-                let path = std::path::PathBuf::from(&write.path);
-                let thumbnail = crate::media::library::extract_thumbnail(
-                    &path,
-                    (write.duration_seconds * 0.35).clamp(0.2, 6.0),
-                )
-                .ok();
+                // Decode thumbnails later (gallery lazy-load). A synchronous
+                // MP4 seek + decode right after the save hotkey is a
+                // mid-match stutter and is not needed for the saved file.
+                let thumbnail = None;
 
                 let clip = crate::media::library::ClipMetadata {
                     id: format!(

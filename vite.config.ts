@@ -16,6 +16,14 @@ export default defineConfig({
       "@": path.resolve(__dirname, "src"),
     },
   },
+  server: {
+    watch: {
+      // Never watch the Rust build tree: `cargo` locks files under
+      // src-tauri/target while building and Vite's watcher crashes the dev
+      // server with EBUSY (which also kills `tauri dev`).
+      ignored: ["**/src-tauri/**"],
+    },
+  },
   test: {
     environment: "node",
     include: ["src/**/*.test.ts"],

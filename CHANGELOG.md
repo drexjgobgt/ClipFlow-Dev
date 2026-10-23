@@ -2,6 +2,28 @@
 
 All notable changes to **ClipFlow** are documented here. The project follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Versioning](https://semver.org/).
 
+## [1.5.0] - 2026-10-24
+
+### Performance
+
+- **🎮 Game Mode is now the default** — capture is capped at **1080p / 60 FPS**, the hardware encoder is biased toward speed (`CODECAPI_AVEncCommonQuality = 55` + `AVEncCommonQualityVsSpeed = 80`, B-frames off), >1080p monitors are downscaled with the correct aspect ratio, and the video processor runs in `OPTIMAL_SPEED` mode. The 60 FPS cap is now enforced on **every** start path (deck ARM, Apply & Restart, profile switch and hotkey), not just at launch. Clip audio and lossless trimming are unaffected. A toggle in **Settings → Performance & Game Mode** restores native-resolution capture if wanted.
+- **🖥️ Integrated-GPU awareness** — when the capture adapter is an integrated GPU (Intel Iris Xe/UHD, AMD Radeon Graphics), Game Mode tightens automatically to **720p / 30 FPS / 6 Mbps**: the game and the encoder share one chip and its memory bandwidth, so this is the setting that actually protects frame rate. The deck shows "Integrated GPU detected" with the adapter name, and turning Game Mode off still gives full native resolution.
+- **📉 Removed the frame-drop sources** — the always-on-top HUD overlay window is gone, gallery cards no longer autoplay a decoded video on hover, GIF export was removed from the trimmer, and the "Simulate GPU Reset" test button is gone.
+- **🧵 Gentler thread scheduling** — in Game Mode the capture thread runs at `THREAD_PRIORITY_NORMAL` and the audio thread at `NORMAL` (polling at 10 ms) so the game always wins a scheduling race; with Game Mode off they stay at `ABOVE_NORMAL`. Neither uses MMCSS or `TIME_CRITICAL` any more, and the capture loop no longer spin-waits the last 0.4 ms of every frame.
+- **🖼️ No decode spike when a clip is saved** — thumbnails are no longer generated synchronously on the save hotkey. The gallery and Home "Recent Replays" decode them lazily, only while the ClipFlow window is actually visible, and share one cache.
+- **🔕 Background work goes quiet** — engine stats are emitted at 1 Hz and only while the main window is visible (and one failed emit can no longer kill the heartbeat); the recording pulse animation pauses while the deck is hidden or unfocused; battery/RAM polling runs only when ECO is enabled; foreground focus polling runs only when auto-switch, privacy mode or auto-save-on-exit is enabled, and at 5 s instead of 2 s; per-game folder resolution no longer reads cross-process window titles.
+- **🖼️ Gallery** — thumbnails stay static (click to open the trimmer and decode there), so browsing never competes with the game for the video decoder.
+
+### Changed
+
+- **☀️ New soft off-white UI theme** — the whole app (deck, gallery, trimmer, settings, dialogs, toasts) is now a low-glare gray off-white: `#e9ecef` background, `#f8f9fa` cards, `#d3d9e0` borders, dark slate text and a blue accent. Nothing is pure white any more, so long sessions in a dark room are easier on the eyes; focus rings, inputs, sliders and hover states were retuned for contrast.
+- **🧭 Friendlier home screen** — the technical "Recording Pipeline" card became a plain-language **Performance** card (Game Mode status, capture/encoder/audio health) with diagnostics behind a disclosure.
+- **🔊 Audio clipping and video trimming remain first-class** — game audio, microphone mixing and keyframe stream-copy trim/split are untouched by the performance work.
+
+### Removed
+
+- HUD overlay window, hover video previews, GIF export and the GPU-reset simulation button.
+
 ## [1.4.2] - 2026-08-11
 
 ### Added

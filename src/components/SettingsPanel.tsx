@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { clipflow } from "../lib/bridge";
 import type {
   AppSettings,
@@ -9,6 +9,7 @@ import type {
   UpdateProgress,
 } from "../lib/types";
 import { formatBytes } from "../lib/format";
+import { isIntegratedAdapter } from "../lib/gpu";
 import { cn } from "../utils/cn";
 import { Row, Toggle } from "./ui";
 
@@ -25,7 +26,6 @@ interface Props {
   onChooseFolder: () => void;
   updateProgress?: UpdateProgress | null;
   onCheckForUpdates: () => void;
-  onSimulateDeviceLoss: () => void;
   native: boolean;
 }
 
@@ -89,13 +89,13 @@ function HotkeyRecorder({
       className={cn(
         "relative rounded border px-3 py-1 font-mono text-[11px] font-semibold tracking-wide transition-colors",
         recording
-          ? "border-[#64b5f6] bg-[#64b5f6]/20 text-[#64b5f6]"
-          : "border-[#384252] bg-[#191d24] text-[#e8ecf2] hover:border-[#64b5f6]/60 hover:bg-[#222832]",
+          ? "border-[#2563eb] bg-[#2563eb]/20 text-[#2563eb]"
+          : "border-[#bcc5cf] bg-[#f8f9fa] text-[#0f172a] hover:border-[#2563eb]/60 hover:bg-[#eceff2]",
       )}
     >
       {recording ? (
         <>
-          <span className="mr-1.5 inline-block h-1.5 w-1.5 animate-rec rounded-full bg-[#64b5f6] align-middle" />
+          <span className="mr-1.5 inline-block h-1.5 w-1.5 animate-rec rounded-full bg-[#2563eb] align-middle" />
           Press keys…
         </>
       ) : (
@@ -117,13 +117,23 @@ export default function SettingsPanel({
   onChooseFolder,
   updateProgress,
   onCheckForUpdates,
-  onSimulateDeviceLoss,
   native,
 }: Props) {
   const [recording, setRecording] = useState<"save" | "toggle" | null>(null);
   const [bitrate, setBitrate] = useState(settings.bitrateKbps);
   const [audioDevices, setAudioDevices] = useState<AudioDevice[]>([]);
   const [scanningDevices, setScanningDevices] = useState(false);
+
+  // Engine value wins while recording; before a start we infer from the active
+  // monitor's adapter so the Game Mode copy is correct on an idle iGPU laptop.
+  const integrated = useMemo(() => {
+    if (stats.integrated_gpu) return true;
+    const active =
+      monitors.find((m) => m.index === settings.monitorIndex) ??
+      monitors.find((m) => m.primary) ??
+      monitors[0];
+    return isIntegratedAdapter(active?.adapter);
+  }, [stats.integrated_gpu, monitors, settings.monitorIndex]);
 
   useEffect(() => {
     setBitrate(settings.bitrateKbps);
@@ -166,16 +176,87 @@ export default function SettingsPanel({
 
   const projectedRam =
     (settings.bufferSeconds * settings.bitrateKbps * 1000) / 8 * 1.6;
+  // Game Mode caps the *effective* rate without destroying the user's saved
+  // preference, so the 30/60 shortcut should highlight what is actually used.
+  // Integrated GPUs share the die with the game and are capped harder.
+  const integratedCap = integrated ? 30 : 60;
+  const effectiveFps = settings.performanceMode
+    ? Math.min(settings.targetFps, integratedCap)
+    : settings.targetFps;
 
   return (
     <div className="space-y-4">
+      {/* ---------------- 0. Performance & Game Mode ---------------- */}
+      <section className="panel rounded-xl p-5 space-y-4 border-[#2563eb]/35">
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[#d3d9e0] pb-3">
+          <div>
+            <h3 className="text-[13px] font-semibold text-[#0f172a]">
+              Performance &amp; Game Mode
+            </h3>
+            <p className="text-[11px] text-[#475569] mt-0.5">
+              Keeps the recorder out of your game's way. Recommended for Valorant, CS2 and other competitive titles.
+            </p>
+          </div>
+          <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-0.5 text-[10px] font-semibold text-emerald-700">
+            AUDIO + TRIM ALWAYS ON
+          </span>
+        </div>
+
+        <Row
+          label="Game Mode"
+          hint={
+            integrated
+              ? "Integrated GPU detected: caps capture at 720p/30 and runs the capture thread at normal priority so the game always wins a scheduling race."
+              : "Caps capture at 1080p/60, uses the speed-first encoder tune, and runs the capture thread at normal priority so the game always wins a scheduling race."
+          }
+        >
+          <Toggle
+            on={settings.performanceMode}
+            onClick={() => onChange({ performanceMode: !settings.performanceMode })}
+          />
+        </Row>
+
+        <div className="rounded-lg border border-[#d3d9e0] bg-[#f1f3f5] p-3">
+          <div className="text-[11px] font-semibold text-[#0f172a]">
+            Want the lightest possible capture?
+          </div>
+          <p className="mt-1 text-[11px] leading-relaxed text-[#475569]">
+            Record at 30 FPS instead of 60. Clips stay sharp and audio is untouched, but
+            the encoder does half the work. Apply it with the restart button at the
+            bottom of Video &amp; Replay Quality.
+          </p>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {[30, 60].map((f) => (
+              <button
+                key={f}
+                type="button"
+                onClick={() => onChange({ targetFps: f })}
+                className={cn(
+                  "rounded border px-2.5 py-1 font-mono text-[11px] transition-colors",
+                  effectiveFps === f
+                    ? "border-[#2563eb] bg-[#2563eb] text-white font-semibold"
+                    : "border-[#d3d9e0] bg-[#eceff2] text-[#475569] hover:text-slate-900",
+                )}
+              >
+                {f} FPS
+              </button>
+            ))}
+          </div>
+          {settings.performanceMode && (
+            <p className="mt-2 text-[10px] text-[#475569]">
+              Effective now: {effectiveFps} FPS. Your saved choice is kept for when Game Mode is off.
+            </p>
+          )}
+        </div>
+      </section>
+
       {/* ---------------- 1. Video & Recording Quality ---------------- */}
       <section className="panel rounded-xl p-5 space-y-4">
-        <div className="border-b border-[#303744] pb-3">
-          <h3 className="text-[13px] font-semibold text-[#e8ecf2]">
+        <div className="border-b border-[#d3d9e0] pb-3">
+          <h3 className="text-[13px] font-semibold text-[#0f172a]">
             Video & Replay Quality
           </h3>
-          <p className="text-[11px] text-[#a0a9b6] mt-0.5">
+          <p className="text-[11px] text-[#475569] mt-0.5">
             Configure resolution, buffer size, target frame rate, and hardware encoder
           </p>
         </div>
@@ -191,8 +272,8 @@ export default function SettingsPanel({
                   className={cn(
                     "rounded border px-2.5 py-1 font-mono text-[11px] transition-colors",
                     settings.bufferSeconds === s
-                      ? "border-[#64b5f6] bg-[#64b5f6] text-[#0f172a] font-semibold"
-                      : "border-[#303744] bg-[#222832] text-[#a0a9b6] hover:text-[#e8ecf2]",
+                      ? "border-[#2563eb] bg-[#2563eb] text-white font-semibold"
+                      : "border-[#d3d9e0] bg-[#eceff2] text-[#475569] hover:text-slate-900",
                   )}
                 >
                   {s >= 60 ? `${s / 60}m` : `${s}s`}
@@ -201,7 +282,14 @@ export default function SettingsPanel({
             </div>
           </Row>
 
-          <Row label="Target frame rate" hint="Paced capture rate with sub-millisecond precision.">
+          <Row
+            label="Target frame rate"
+            hint={
+              settings.performanceMode && settings.targetFps > effectiveFps
+                ? `Game Mode caps the effective rate at ${effectiveFps} FPS. Your higher preference is kept for when Game Mode is off.`
+                : "Paced capture rate with sub-millisecond precision."
+            }
+          >
             <div className="flex gap-1.5">
               {FPS_PRESETS.map((f) => (
                 <button
@@ -211,8 +299,8 @@ export default function SettingsPanel({
                   className={cn(
                     "rounded border px-2.5 py-1 font-mono text-[11px] transition-colors",
                     settings.targetFps === f
-                      ? "border-[#64b5f6] bg-[#64b5f6] text-[#0f172a] font-semibold"
-                      : "border-[#303744] bg-[#222832] text-[#a0a9b6] hover:text-[#e8ecf2]",
+                      ? "border-[#2563eb] bg-[#2563eb] text-white font-semibold"
+                      : "border-[#d3d9e0] bg-[#eceff2] text-[#475569] hover:text-slate-900",
                   )}
                 >
                   {f} FPS
@@ -234,8 +322,8 @@ export default function SettingsPanel({
                   className={cn(
                     "rounded border px-2.5 py-1 font-mono text-[11px] transition-colors",
                     settings.codec === c
-                      ? "border-[#64b5f6] bg-[#64b5f6] text-[#0f172a] font-semibold"
-                      : "border-[#303744] bg-[#222832] text-[#a0a9b6] hover:text-[#e8ecf2]",
+                      ? "border-[#2563eb] bg-[#2563eb] text-white font-semibold"
+                      : "border-[#d3d9e0] bg-[#eceff2] text-[#475569] hover:text-slate-900",
                   )}
                 >
                   {c === "h264" ? "H.264 (Universal)" : "HEVC / H.265"}
@@ -265,10 +353,10 @@ export default function SettingsPanel({
             <select
               value={settings.monitorIndex}
               onChange={(e) => onChange({ monitorIndex: Number(e.target.value) })}
-              className="rounded border border-[#303744] bg-[#111318] px-2.5 py-1.5 text-[11px] text-[#e8ecf2] outline-none focus:border-[#64b5f6]"
+              className="rounded border border-[#d3d9e0] bg-[#e9ecef] px-2.5 py-1.5 text-[11px] text-[#0f172a] outline-none focus:border-[#2563eb]"
             >
               {monitors.map((m) => (
-                <option key={m.index} value={m.index} className="bg-[#111318]">
+                <option key={m.index} value={m.index} className="bg-[#e9ecef]">
                   {m.name} ({m.width}×{m.height}) {m.primary ? "— Primary" : ""}
                 </option>
               ))}
@@ -276,31 +364,27 @@ export default function SettingsPanel({
           </Row>
         </div>
 
-        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[#303744] pt-3">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[#d3d9e0] pt-3">
           <button
             type="button"
             onClick={onRestartEngine}
-            className="rounded-lg border border-[#64b5f6]/50 bg-[#64b5f6]/15 px-3.5 py-1.5 text-[12px] font-semibold text-[#64b5f6] transition-colors hover:bg-[#64b5f6]/25"
+            className="rounded-lg border border-[#2563eb]/50 bg-[#2563eb]/15 px-3.5 py-1.5 text-[12px] font-semibold text-[#2563eb] transition-colors hover:bg-[#2563eb]/25"
           >
             Apply & Restart Engine
           </button>
-          <button
-            type="button"
-            onClick={onSimulateDeviceLoss}
-            className="rounded-lg border border-[#303744] bg-[#222832] px-3 py-1.5 text-[11px] text-[#a0a9b6] transition-colors hover:text-[#e8ecf2]"
-          >
-            Simulate GPU Reset
-          </button>
+          <span className="text-[11px] text-[#475569]">
+            Capture settings apply after a restart. Buffer size changes live.
+          </span>
         </div>
       </section>
 
       {/* ---------------- 2. Audio Setup & Diagnostics ---------------- */}
       <section className="panel rounded-xl p-5 space-y-4">
-        <div className="border-b border-[#303744] pb-3">
-          <h3 className="text-[13px] font-semibold text-[#e8ecf2]">
+        <div className="border-b border-[#d3d9e0] pb-3">
+          <h3 className="text-[13px] font-semibold text-[#0f172a]">
             Audio Setup & Devices
           </h3>
-          <p className="text-[11px] text-[#a0a9b6] mt-0.5">
+          <p className="text-[11px] text-[#475569] mt-0.5">
             Manage game sound capture and voice commentary recording
           </p>
         </div>
@@ -342,7 +426,7 @@ export default function SettingsPanel({
               >
                 <div className="flex items-center gap-2">
                   <select
-                    className="max-w-[240px] truncate rounded border border-[#303744] bg-[#111318] px-2.5 py-1.5 text-[11px] text-[#e8ecf2] focus:border-[#64b5f6] focus:outline-none"
+                    className="max-w-[240px] truncate rounded border border-[#d3d9e0] bg-[#e9ecef] px-2.5 py-1.5 text-[11px] text-[#0f172a] focus:border-[#2563eb] focus:outline-none"
                     value={settings.micDeviceId || "default"}
                     onChange={(e) => {
                       const val = e.target.value;
@@ -363,7 +447,7 @@ export default function SettingsPanel({
                     onClick={() => void refreshAudioDevices()}
                     title="Rescan microphones"
                     disabled={scanningDevices}
-                    className="flex h-7 w-7 items-center justify-center rounded border border-[#303744] bg-[#222832] text-[#a0a9b6] transition-colors hover:border-[#64b5f6] hover:text-[#e8ecf2] disabled:opacity-50"
+                    className="flex h-7 w-7 items-center justify-center rounded border border-[#d3d9e0] bg-[#eceff2] text-[#475569] transition-colors hover:border-[#2563eb] hover:text-slate-900 disabled:opacity-50"
                   >
                     <svg
                       className={cn("h-3.5 w-3.5", scanningDevices && "animate-spin")}
@@ -394,22 +478,22 @@ export default function SettingsPanel({
                 />
               </Row>
 
-              <div className="mt-2 rounded-lg border border-[#303744] bg-[#161a22] p-3 text-[11px] text-[#a0a9b6] space-y-1">
-                <div className="flex items-center justify-between text-[11px] font-semibold text-[#e8ecf2]">
+              <div className="mt-2 rounded-lg border border-[#d3d9e0] bg-[#f1f3f5] p-3 text-[11px] text-[#475569] space-y-1">
+                <div className="flex items-center justify-between text-[11px] font-semibold text-[#0f172a]">
                   <span>Audio Health Status</span>
-                  <span className={cn(stats.audio_mic ? "text-emerald-400" : "text-[#727e90]")}>
+                  <span className={cn(stats.audio_mic ? "text-emerald-700" : "text-[#475569]")}>
                     {stats.audio_mic ? "Mic Active" : "Mic Standby"}
                   </span>
                 </div>
                 <div className="text-[11px]">
                   Active microphone:{" "}
-                  <span className="font-medium text-[#e8ecf2]">
+                  <span className="font-medium text-[#0f172a]">
                     {settings.micDeviceId
                       ? audioDevices.find((d) => d.id === settings.micDeviceId)?.name || "Selected Device"
                       : `Default (${audioDevices.find((d) => d.isDefault)?.name || "System Default"})`}
                   </span>
                 </div>
-                <p className="text-[10px] text-[#727e90] pt-1">
+                <p className="text-[10px] text-[#475569] pt-1">
                   If microphone audio is missing, confirm Windows permits desktop applications under Windows Settings &gt; Privacy &amp; security &gt; Microphone.
                 </p>
               </div>
@@ -420,11 +504,11 @@ export default function SettingsPanel({
 
       {/* ---------------- 3. Hotkeys & Shortcuts ---------------- */}
       <section className="panel rounded-xl p-5 space-y-4">
-        <div className="border-b border-[#303744] pb-3">
-          <h3 className="text-[13px] font-semibold text-[#e8ecf2]">
+        <div className="border-b border-[#d3d9e0] pb-3">
+          <h3 className="text-[13px] font-semibold text-[#0f172a]">
             Keyboard Shortcuts
           </h3>
-          <p className="text-[11px] text-[#a0a9b6] mt-0.5">
+          <p className="text-[11px] text-[#475569] mt-0.5">
             Global hotkeys that function while gaming in borderless and full-screen modes
           </p>
         </div>
@@ -450,11 +534,11 @@ export default function SettingsPanel({
 
       {/* ---------------- 4. Storage & Library ---------------- */}
       <section className="panel rounded-xl p-5 space-y-4">
-        <div className="border-b border-[#303744] pb-3">
-          <h3 className="text-[13px] font-semibold text-[#e8ecf2]">
+        <div className="border-b border-[#d3d9e0] pb-3">
+          <h3 className="text-[13px] font-semibold text-[#0f172a]">
             Storage & File Management
           </h3>
-          <p className="text-[11px] text-[#a0a9b6] mt-0.5">
+          <p className="text-[11px] text-[#475569] mt-0.5">
             Configure where clips are saved and manage automatic cleanup
           </p>
         </div>
@@ -465,14 +549,14 @@ export default function SettingsPanel({
               <button
                 type="button"
                 onClick={onOpenFolder}
-                className="rounded border border-[#303744] bg-[#222832] px-3 py-1 text-[11px] font-medium text-[#e8ecf2] hover:border-[#64b5f6]"
+                className="rounded border border-[#d3d9e0] bg-[#eceff2] px-3 py-1 text-[11px] font-medium text-[#0f172a] hover:border-[#2563eb]"
               >
                 Open Folder
               </button>
               <button
                 type="button"
                 onClick={onChooseFolder}
-                className="rounded border border-[#303744] bg-[#222832] px-3 py-1 text-[11px] font-medium text-[#e8ecf2] hover:border-[#64b5f6]"
+                className="rounded border border-[#d3d9e0] bg-[#eceff2] px-3 py-1 text-[11px] font-medium text-[#0f172a] hover:border-[#2563eb]"
               >
                 Change Folder
               </button>
@@ -496,8 +580,8 @@ export default function SettingsPanel({
                   className={cn(
                     "rounded border px-2.5 py-1 text-[11px] transition-colors",
                     settings.autoCleanupDays === p.days
-                      ? "border-[#64b5f6] bg-[#64b5f6] text-[#0f172a] font-semibold"
-                      : "border-[#303744] bg-[#222832] text-[#a0a9b6] hover:text-[#e8ecf2]",
+                      ? "border-[#2563eb] bg-[#2563eb] text-white font-semibold"
+                      : "border-[#d3d9e0] bg-[#eceff2] text-[#475569] hover:text-slate-900",
                   )}
                 >
                   {p.label}
@@ -510,12 +594,12 @@ export default function SettingsPanel({
 
       {/* ---------------- 5. Workflow & Gaming Experience ---------------- */}
       <section className="panel rounded-xl p-5 space-y-4">
-        <div className="border-b border-[#303744] pb-3">
-          <h3 className="text-[13px] font-semibold text-[#e8ecf2]">
+        <div className="border-b border-[#d3d9e0] pb-3">
+          <h3 className="text-[13px] font-semibold text-[#0f172a]">
             Workflow & Gaming Experience
           </h3>
-          <p className="text-[11px] text-[#a0a9b6] mt-0.5">
-            Configure desktop notifications, HUD overlay, and background behavior
+          <p className="text-[11px] text-[#475569] mt-0.5">
+            Configure desktop notifications and background behaviour
           </p>
         </div>
 
@@ -538,13 +622,6 @@ export default function SettingsPanel({
             <Toggle
               on={settings.autosaveOnGameExit}
               onClick={() => onChange({ autosaveOnGameExit: !settings.autosaveOnGameExit })}
-            />
-          </Row>
-
-          <Row label="Show HUD overlay" hint="Subtle always-on-top indicator showing recording status in-game.">
-            <Toggle
-              on={settings.hudEnabled}
-              onClick={() => onChange({ hudEnabled: !settings.hudEnabled })}
             />
           </Row>
 
@@ -587,11 +664,11 @@ export default function SettingsPanel({
 
       {/* ---------------- 6. Adaptive ECO Mode ---------------- */}
       <section className="panel rounded-xl p-5 space-y-4">
-        <div className="border-b border-[#303744] pb-3">
-          <h3 className="text-[13px] font-semibold text-[#e8ecf2]">
+        <div className="border-b border-[#d3d9e0] pb-3">
+          <h3 className="text-[13px] font-semibold text-[#0f172a]">
             Adaptive Performance (ECO Mode)
           </h3>
-          <p className="text-[11px] text-[#a0a9b6] mt-0.5">
+          <p className="text-[11px] text-[#475569] mt-0.5">
             Conserve system battery and memory under hardware pressure
           </p>
         </div>
@@ -640,18 +717,18 @@ export default function SettingsPanel({
                 />
               </Row>
 
-              <div className="mt-2 rounded-lg border border-[#303744] bg-[#161a22] p-3 text-[11px]">
-                <div className="flex items-center justify-between font-semibold text-[#e8ecf2]">
+              <div className="mt-2 rounded-lg border border-[#d3d9e0] bg-[#f1f3f5] p-3 text-[11px]">
+                <div className="flex items-center justify-between font-semibold text-[#0f172a]">
                   <span>System Resource Monitor</span>
                   {power ? (
-                    <span className={cn(power.onBattery ? "text-amber-300" : "text-emerald-400")}>
+                    <span className={cn(power.onBattery ? "text-amber-700" : "text-emerald-700")}>
                       {power.onBattery ? `Battery ${power.batteryPercent}%` : "AC Power Connected"}
                     </span>
                   ) : (
-                    <span className="text-[#727e90]">Reading sensors…</span>
+                    <span className="text-[#475569]">Reading sensors…</span>
                   )}
                 </div>
-                <div className="mt-1 font-mono text-[11px] text-[#a0a9b6]">
+                <div className="mt-1 font-mono text-[11px] text-[#475569]">
                   {power
                     ? `${formatBytes(power.availableRamBytes)} free of ${formatBytes(power.totalRamBytes)} total RAM`
                     : "—"}
@@ -664,24 +741,24 @@ export default function SettingsPanel({
 
       {/* ---------------- 7. Application & Updates ---------------- */}
       <section className="panel rounded-xl p-5 space-y-4">
-        <div className="border-b border-[#303744] pb-3">
-          <h3 className="text-[13px] font-semibold text-[#e8ecf2]">
+        <div className="border-b border-[#d3d9e0] pb-3">
+          <h3 className="text-[13px] font-semibold text-[#0f172a]">
             Application & Updates
           </h3>
-          <p className="text-[11px] text-[#a0a9b6] mt-0.5">
+          <p className="text-[11px] text-[#475569] mt-0.5">
             Software release information and local privacy guarantees
           </p>
         </div>
 
         <div>
           <Row label="Runtime environment" hint="Execution host and window shell platform.">
-            <span className="rounded border border-[#303744] bg-[#222832] px-2.5 py-1 font-mono text-[11px] text-[#e8ecf2]">
+            <span className="rounded border border-[#d3d9e0] bg-[#eceff2] px-2.5 py-1 font-mono text-[11px] text-[#0f172a]">
               {native ? "Windows Desktop (Tauri Native)" : "Web Preview (Browser Sandbox)"}
             </span>
           </Row>
 
           <Row label="Installed version" hint="Native Rust core with Tauri v2 framework.">
-            <span className="rounded border border-[#303744] bg-[#222832] px-2.5 py-1 font-mono text-[11px] text-[#e8ecf2]">
+            <span className="rounded border border-[#d3d9e0] bg-[#eceff2] px-2.5 py-1 font-mono text-[11px] text-[#0f172a]">
               v{version}
             </span>
           </Row>
@@ -690,15 +767,15 @@ export default function SettingsPanel({
             <button
               type="button"
               onClick={onCheckForUpdates}
-              className="rounded-lg border border-[#64b5f6]/40 bg-[#64b5f6]/10 px-3.5 py-1.5 text-[12px] font-semibold text-[#64b5f6] hover:bg-[#64b5f6]/20 transition-colors"
+              className="rounded-lg border border-[#2563eb]/40 bg-[#2563eb]/10 px-3.5 py-1.5 text-[12px] font-semibold text-[#2563eb] hover:bg-[#2563eb]/20 transition-colors"
             >
               Check for Updates
             </button>
           </Row>
 
           {updateProgress && (
-            <div className="mt-3 space-y-1.5 rounded-lg border border-[#303744] bg-[#161a22] p-3">
-              <div className="flex items-center justify-between font-mono text-[11px] text-[#a0a9b6]">
+            <div className="mt-3 space-y-1.5 rounded-lg border border-[#d3d9e0] bg-[#f1f3f5] p-3">
+              <div className="flex items-center justify-between font-mono text-[11px] text-[#475569]">
                 <span>
                   {updateProgress.phase === "DOWNLOADING" ? "Downloading update…" : updateProgress.phase}
                 </span>
@@ -709,9 +786,9 @@ export default function SettingsPanel({
                 )}
               </div>
               {updateProgress.total > 0 && (
-                <div className="h-1.5 overflow-hidden rounded-full bg-[#111318]">
+                <div className="h-1.5 overflow-hidden rounded-full bg-[#e9ecef]">
                   <div
-                    className="h-full bg-[#64b5f6] transition-all duration-200"
+                    className="h-full bg-[#2563eb] transition-all duration-200"
                     style={{
                       width: `${Math.min(100, (updateProgress.downloaded / updateProgress.total) * 100)}%`,
                     }}
@@ -725,7 +802,7 @@ export default function SettingsPanel({
             <button
               type="button"
               onClick={() => void clipflow.quit()}
-              className="rounded-lg border border-red-500/30 bg-red-500/10 px-3.5 py-1.5 text-[11px] font-medium text-red-300 hover:border-red-400 hover:bg-red-500/20"
+              className="rounded-lg border border-red-500/30 bg-red-500/10 px-3.5 py-1.5 text-[11px] font-medium text-red-600 hover:border-red-400 hover:bg-red-500/20"
             >
               Quit Application
             </button>

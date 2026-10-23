@@ -169,7 +169,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoCleanupDays: 0,
   organizeByGame: true,
   autosaveOnGameExit: false,
-  hudEnabled: false,
+  performanceMode: true,
   privacyPauseWhenUnfocused: false,
   gameVolume: 100,
   micVolume: 100,
@@ -558,13 +558,6 @@ export const clipflow = {
   async cleanupOldClips(days: number): Promise<number> {
     if (isTauri()) return invoke<number>("cleanup_old_clips", { days });
     return simEngine.cleanupOldClips(days);
-  },
-
-  /** Shows/hides the always-on-top recording HUD (native only). */
-  async setHudVisible(visible: boolean): Promise<void> {
-    if (isTauri()) {
-      await invoke("set_hud_visible", { visible });
-    }
   },
 
   /**

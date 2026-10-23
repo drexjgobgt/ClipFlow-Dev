@@ -10,7 +10,7 @@ interface Props {
 export default function TitleBar({ armed, native, version }: Props) {
   return (
     <header
-      className="drag-region flex h-10 shrink-0 select-none items-center justify-between border-b border-[#303744] bg-[#111318] px-3.5"
+      className="drag-region flex h-10 shrink-0 select-none items-center justify-between border-b border-[#d3d9e0] bg-[#e9ecef] px-3.5"
       onPointerDown={(e) => {
         if ((e.target as HTMLElement).closest(".no-drag")) return;
         void clipflow.startDragging();
@@ -18,17 +18,17 @@ export default function TitleBar({ armed, native, version }: Props) {
     >
       <div className="flex items-center gap-2.5">
         {/* App Mark */}
-        <div className="flex h-5 w-5 items-center justify-center rounded bg-[#222832] text-[#64b5f6] border border-[#303744]">
+        <div className="flex h-5 w-5 items-center justify-center rounded bg-[#eceff2] text-[#2563eb] border border-[#d3d9e0]">
           <svg viewBox="0 0 16 16" className="h-3 w-3 fill-current" aria-hidden="true">
             <path d="M4 3.5v9l8-4.5-8-4.5z" />
           </svg>
         </div>
 
         <div className="flex items-baseline gap-1.5">
-          <span className="text-[13px] font-semibold tracking-normal text-[#e8ecf2]">
+          <span className="text-[13px] font-semibold tracking-normal text-[#0f172a]">
             ClipFlow
           </span>
-          <span className="font-mono text-[10px] text-[#727e90]">
+          <span className="font-mono text-[10px] text-[#475569]">
             v{version}
           </span>
         </div>
@@ -37,21 +37,21 @@ export default function TitleBar({ armed, native, version }: Props) {
           className={cn(
             "flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-medium tracking-wide",
             armed
-              ? "border border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
-              : "border border-[#303744] bg-[#191d24] text-[#a0a9b6]",
+              ? "border border-emerald-500/30 bg-emerald-500/10 text-emerald-700"
+              : "border border-[#d3d9e0] bg-[#f8f9fa] text-[#475569]",
           )}
         >
           <span
             className={cn(
               "h-1.5 w-1.5 rounded-full",
-              armed ? "bg-emerald-400 animate-rec" : "bg-[#727e90]",
+              armed ? "bg-emerald-400 animate-rec" : "bg-[#64748b]",
             )}
           />
           {armed ? "Recording Buffer Active" : "Ready on Standby"}
         </span>
 
         {!native && (
-          <span className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 font-mono text-[10px] text-amber-300">
+          <span className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 font-mono text-[10px] text-amber-700">
             SIMULATED PREVIEW
           </span>
         )}
@@ -60,7 +60,7 @@ export default function TitleBar({ armed, native, version }: Props) {
       <div className="no-drag flex items-center gap-1">
         <button
           onClick={() => void clipflow.minimize()}
-          className="grid h-7 w-8 place-items-center rounded text-[#a0a9b6] transition-colors hover:bg-[#222832] hover:text-[#e8ecf2]"
+          className="grid h-7 w-8 place-items-center rounded text-[#475569] transition-colors hover:bg-[#eceff2] hover:text-slate-900"
           title="Minimize"
           aria-label="Minimize"
         >
@@ -70,7 +70,7 @@ export default function TitleBar({ armed, native, version }: Props) {
         </button>
         <button
           onClick={() => void clipflow.toggleMaximize()}
-          className="grid h-7 w-8 place-items-center rounded text-[#a0a9b6] transition-colors hover:bg-[#222832] hover:text-[#e8ecf2]"
+          className="grid h-7 w-8 place-items-center rounded text-[#475569] transition-colors hover:bg-[#eceff2] hover:text-slate-900"
           title="Maximize"
           aria-label="Maximize"
         >
@@ -80,7 +80,7 @@ export default function TitleBar({ armed, native, version }: Props) {
         </button>
         <button
           onClick={() => void clipflow.hideToTray()}
-          className="grid h-7 w-8 place-items-center rounded text-[#a0a9b6] transition-colors hover:bg-[#222832] hover:text-[#e8ecf2]"
+          className="grid h-7 w-8 place-items-center rounded text-[#475569] transition-colors hover:bg-[#eceff2] hover:text-slate-900"
           title="Hide to tray (keeps recording in background)"
           aria-label="Hide to tray"
         >
@@ -91,7 +91,7 @@ export default function TitleBar({ armed, native, version }: Props) {
         </button>
         <button
           onClick={() => void clipflow.quit()}
-          className="grid h-7 w-8 place-items-center rounded text-[#a0a9b6] transition-colors hover:bg-red-500/20 hover:text-red-300"
+          className="grid h-7 w-8 place-items-center rounded text-[#475569] transition-colors hover:bg-red-500/20 hover:text-red-600"
           title="Quit ClipFlow"
           aria-label="Quit"
         >

@@ -24,8 +24,6 @@ interface Props {
   onSnapshot: (pngBase64: string) => Promise<void> | void;
   /** Cuts the clip in two at the playhead (two stream-copy trims). */
   onSplit: (splitSeconds: number) => Promise<void> | void;
-  /** Exports the selection as an animated GIF (native; errors toast in App). */
-  onExportGif: (start: number, end: number, width: number, fps: number) => Promise<void> | void;
   onDiscard: () => Promise<void> | void;
   onClose: () => void;
   /** Stars / unstars this clip (persisted in the local sidecar store). */
@@ -47,7 +45,6 @@ export default function ClipTrimmerModal({
   onRename,
   onSnapshot,
   onSplit,
-  onExportGif,
   onDiscard,
   onClose,
   onToggleFavorite,
@@ -67,9 +64,6 @@ export default function ClipTrimmerModal({
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState(clip.file_name);
   const [tagDraft, setTagDraft] = useState("");
-  const [gifOpen, setGifOpen] = useState(false);
-  const [gifWidth, setGifWidth] = useState(480);
-  const [gifFps, setGifFps] = useState(15);
 
   const src = clip.preview_url ?? assetUrl(clip.path);
   const hasVideo = src.length > 0;
@@ -113,9 +107,17 @@ export default function ClipTrimmerModal({
   const handleLoadedMetadata = () => {
     const v = videoRef.current;
     if (!v) return;
-    if (v.duration && !Number.isNaN(v.duration)) {
-      setDuration(v.duration);
-      setEnd((cur) => (cur > v.duration ? v.duration : cur));
+    const reported = v.duration;
+    if (Number.isFinite(reported) && reported > 0) {
+      setDuration(reported);
+      setEnd((cur) => (cur > reported ? reported : cur));
+    } else if (clip.duration_seconds > 0) {
+      // Some sources (streams, partially-indexed MP4s, the browser sim) report
+      // Infinity until fully parsed. Fall back to the duration the recorder
+      // wrote into the clip metadata so the ruler/timecodes stay finite.
+      const fallback = clip.duration_seconds;
+      setDuration(fallback);
+      setEnd((cur) => (cur > fallback ? fallback : cur));
     }
   };
 
@@ -266,18 +268,18 @@ export default function ClipTrimmerModal({
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto p-4">
       <div
-        className="animate-fade fixed inset-0 bg-[#0d0f14]/85 backdrop-blur-sm"
+        className="animate-fade fixed inset-0 bg-[#0f172a]/45 backdrop-blur-sm"
         onClick={onClose}
       />
 
       <div className="relative flex min-h-full items-center justify-center">
-        <div className="animate-pop panel-elevated relative z-10 flex w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-[#313a49] bg-[#171b22]">
+        <div className="animate-pop panel-elevated relative z-10 flex w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-[#cdd5df] bg-[#f8f9fa]">
           {/* Header */}
-          <div className="flex items-center justify-between border-b border-[#232934] px-5 py-3">
+          <div className="flex items-center justify-between border-b border-[#d3d9e0] px-5 py-3">
             <div className="flex items-center gap-3">
               <span className="h-2.5 w-2.5 rounded-full bg-blue-400" />
               <div>
-                <div className="font-mono text-[11px] font-semibold tracking-wider text-[#d4dae3]">
+                <div className="font-mono text-[11px] font-semibold tracking-wider text-[#334155]">
                   CLIP TRIMMER
                 </div>
                 {renaming ? (
@@ -296,7 +298,7 @@ export default function ClipTrimmerModal({
                       }
                     }}
                     onBlur={commitRename}
-                    className="mt-0.5 w-full max-w-[42ch] rounded border border-blue-400/50 bg-[#14171e] px-2 py-0.5 font-mono text-[11px] text-[#e6eaf0] outline-none"
+                    className="mt-0.5 w-full max-w-[42ch] rounded border border-blue-400/50 bg-[#f1f3f5] px-2 py-0.5 font-mono text-[11px] text-[#0f172a] outline-none"
                     spellCheck={false}
                   />
                 ) : (
@@ -307,10 +309,10 @@ export default function ClipTrimmerModal({
                       setRenaming(true);
                     }}
                     title="Rename clip"
-                    className="group mt-0.5 flex items-center gap-1.5 font-mono text-[11px] text-[#8692a3] transition hover:text-[#d4dae3]"
+                    className="group mt-0.5 flex items-center gap-1.5 font-mono text-[11px] text-[#475569] transition hover:text-[#334155]"
                   >
                     <span className="max-w-[44ch] truncate">{clip.file_name}</span>
-                    <span className="text-[10px] text-[#556172] group-hover:text-blue-400">
+                    <span className="text-[10px] text-[#475569] group-hover:text-blue-700">
                       [Rename]
                     </span>
                   </button>
@@ -320,7 +322,7 @@ export default function ClipTrimmerModal({
 
             <div className="flex items-center gap-2.5">
               {typeof flushMs === "number" && (
-                <span className="rounded border border-[#2f3846] bg-[#14171e] px-2 py-1 font-mono text-[10px] text-[#8692a3]">
+                <span className="rounded border border-[#cdd5df] bg-[#f1f3f5] px-2 py-1 font-mono text-[10px] text-[#475569]">
                   FLUSHED IN {flushMs.toFixed(1)} MS
                 </span>
               )}
@@ -331,8 +333,8 @@ export default function ClipTrimmerModal({
                 className={cn(
                   "grid h-7 w-7 place-items-center rounded-md border text-[13px] transition-colors",
                   clip.favorite
-                    ? "border-amber-400/40 bg-amber-400/10 text-amber-300"
-                    : "border-[#2c3543] bg-[#14171e] text-[#8692a3] hover:text-white",
+                    ? "border-amber-400/40 bg-amber-400/10 text-amber-700"
+                    : "border-[#cdd5df] bg-[#f1f3f5] text-[#475569] hover:text-slate-900",
                 )}
               >
                 {clip.favorite ? "★" : "☆"}
@@ -340,7 +342,7 @@ export default function ClipTrimmerModal({
               <button
                 type="button"
                 onClick={onClose}
-                className="grid h-7 w-7 place-items-center rounded-md border border-[#2c3543] bg-[#14171e] text-[#8692a3] transition-colors hover:border-red-400/50 hover:text-red-300"
+                className="grid h-7 w-7 place-items-center rounded-md border border-[#cdd5df] bg-[#f1f3f5] text-[#475569] transition-colors hover:border-red-400/50 hover:text-red-600"
                 aria-label="Close trimmer"
               >
                 ✕
@@ -349,19 +351,19 @@ export default function ClipTrimmerModal({
           </div>
 
           {/* Tags bar */}
-          <div className="flex flex-wrap items-center gap-1.5 border-b border-[#232934] bg-[#13161c] px-5 py-2">
-            <span className="font-mono text-[10px] tracking-wider text-[#6d798a]">TAGS</span>
+          <div className="flex flex-wrap items-center gap-1.5 border-b border-[#d3d9e0] bg-[#eceff2] px-5 py-2">
+            <span className="font-mono text-[10px] tracking-wider text-[#475569]">TAGS</span>
             {clip.tags.map((t) => (
               <span
                 key={t}
-                className="flex items-center gap-1 rounded border border-[#2c3543] bg-[#1a202a] px-2 py-0.5 font-mono text-[10px] text-[#b5c0d0]"
+                className="flex items-center gap-1 rounded border border-[#cdd5df] bg-[#eceff2] px-2 py-0.5 font-mono text-[10px] text-[#475569]"
               >
                 #{t}
                 <button
                   type="button"
                   onClick={() => void onUpdateTags(clip.tags.filter((x) => x !== t))}
                   title={`Remove tag ${t}`}
-                  className="text-[#6d798a] hover:text-red-300"
+                  className="text-[#475569] hover:text-red-600"
                 >
                   ✕
                 </button>
@@ -383,7 +385,7 @@ export default function ClipTrimmerModal({
               }}
               placeholder="+ add tag…"
               spellCheck={false}
-              className="w-24 rounded border border-[#2c3543] bg-[#171b22] px-2 py-0.5 font-mono text-[10px] text-[#e6eaf0] outline-none placeholder:text-[#556172] focus:border-blue-400"
+              className="w-24 rounded border border-[#cdd5df] bg-[#f8f9fa] px-2 py-0.5 font-mono text-[10px] text-[#0f172a] outline-none placeholder:text-[#475569] focus:border-blue-400"
             />
           </div>
 
@@ -406,14 +408,14 @@ export default function ClipTrimmerModal({
             ) : (
               <div className="grid h-full w-full place-items-center text-center">
                 <div>
-                  <div className="font-mono text-[13px] text-[#8692a3]">NO PREVIEW STREAM</div>
-                  <div className="mt-1 font-mono text-[11px] text-[#556172]">{clip.path}</div>
+                  <div className="font-mono text-[13px] text-[#bcc5cf]">NO PREVIEW STREAM</div>
+                  <div className="mt-1 font-mono text-[11px] text-[#94a3b8]">{clip.path}</div>
                 </div>
               </div>
             )}
 
             {/* Overlay Specs */}
-            <div className="pointer-events-none absolute inset-x-0 top-0 flex items-center justify-between p-3 font-mono text-[10px] text-[#c3cddb]">
+            <div className="pointer-events-none absolute inset-x-0 top-0 flex items-center justify-between p-3 font-mono text-[10px] text-white/90">
               <span className="rounded bg-black/75 px-2 py-1 border border-white/10">
                 {clip.width}×{clip.height} · {clip.fps} FPS · {clip.has_audio ? "AAC 48 kHz" : "NO AUDIO"}
               </span>
@@ -436,24 +438,24 @@ export default function ClipTrimmerModal({
 
           {/* Timeline and scrubber */}
           <div className="space-y-2.5 px-5 pt-3.5 pb-2">
-            <div className="flex items-center justify-between font-mono text-[10px] tracking-wider text-[#8692a3]">
+            <div className="flex items-center justify-between font-mono text-[10px] tracking-wider text-[#475569]">
               <span>
-                IN <span className="text-blue-300 font-semibold">{formatTimecode(start)}</span>
+                IN <span className="text-blue-700 font-semibold">{formatTimecode(start)}</span>
               </span>
               <span>
                 SELECTION{" "}
-                <span className="text-[#e6eaf0] font-semibold">{formatTimecode(selectionSeconds)}</span> ·{" "}
-                <span className="text-[#8692a3]">~{formatBytes(estimatedBytes)}</span>
+                <span className="text-[#0f172a] font-semibold">{formatTimecode(selectionSeconds)}</span> ·{" "}
+                <span className="text-[#475569]">~{formatBytes(estimatedBytes)}</span>
               </span>
               <span>
-                OUT <span className="text-blue-300 font-semibold">{formatTimecode(end)}</span>
+                OUT <span className="text-blue-700 font-semibold">{formatTimecode(end)}</span>
               </span>
             </div>
 
             {/* Clean timeline track */}
             <div
               ref={trackRef}
-              className="relative h-12 cursor-pointer select-none rounded-lg border border-[#2b3342] bg-[#11141a]"
+              className="relative h-12 cursor-pointer select-none rounded-lg border border-[#cdd5df] bg-[#eceff2]"
               onPointerDown={(e) => {
                 const t = positionFromEvent(e.clientX);
                 setDragging("playhead");
@@ -464,19 +466,19 @@ export default function ClipTrimmerModal({
               <div className="pointer-events-none absolute inset-0 flex justify-between px-2 pt-1">
                 {ticks.map((t, i) => (
                   <div key={i} className="flex flex-col items-center">
-                    <span className="h-2 w-px bg-[#262e3b]" />
-                    <span className="mt-1 font-mono text-[8px] text-[#4f5a6b]">{t.toFixed(0)}s</span>
+                    <span className="h-2 w-px bg-[#bcc5cf]" />
+                    <span className="mt-1 font-mono text-[9px] text-[#475569]">{t.toFixed(0)}s</span>
                   </div>
                 ))}
               </div>
 
               {/* Dimmed outside selection regions */}
               <div
-                className="pointer-events-none absolute inset-y-0 left-0 rounded-l-lg bg-black/70"
+                className="pointer-events-none absolute inset-y-0 left-0 rounded-l-lg bg-white/70"
                 style={{ width: pct(start) }}
               />
               <div
-                className="pointer-events-none absolute inset-y-0 right-0 rounded-r-lg bg-black/70"
+                className="pointer-events-none absolute inset-y-0 right-0 rounded-r-lg bg-white/70"
                 style={{ width: `${clamp(((duration - end) / duration) * 100, 0, 100)}%` }}
               />
 
@@ -488,7 +490,7 @@ export default function ClipTrimmerModal({
 
               {/* Playhead */}
               <div
-                className="pointer-events-none absolute inset-y-0 w-0.5 bg-white shadow-sm"
+                className="pointer-events-none absolute inset-y-0 w-0.5 bg-[#0f172a] shadow-[0_0_0_1px_rgba(255,255,255,0.9)]"
                 style={{ left: pct(playhead) }}
               />
 
@@ -503,7 +505,7 @@ export default function ClipTrimmerModal({
                 style={{ left: `calc(${pct(start)} - ${HANDLE_W / 2}px)`, width: HANDLE_W }}
                 aria-label="Trim start"
               >
-                <span className="mx-auto block h-5 w-0.5 bg-white/90" />
+                <span className="mx-auto block h-5 w-0.5 bg-[#0f172a]/80" />
               </button>
 
               {/* Out Handle */}
@@ -517,24 +519,24 @@ export default function ClipTrimmerModal({
                 style={{ left: `calc(${pct(end)} - ${HANDLE_W / 2}px)`, width: HANDLE_W }}
                 aria-label="Trim end"
               >
-                <span className="mx-auto block h-5 w-0.5 bg-white/90" />
+                <span className="mx-auto block h-5 w-0.5 bg-[#0f172a]/80" />
               </button>
             </div>
 
             {/* Micro controls */}
-            <div className="flex flex-wrap items-center justify-between gap-2 font-mono text-[10px] text-[#727e90]">
+            <div className="flex flex-wrap items-center justify-between gap-2 font-mono text-[10px] text-[#475569]">
               <div className="flex flex-wrap items-center gap-1.5">
                 <button
                   type="button"
                   onClick={() => setStart(clamp(playhead, 0, end - 0.2))}
-                  className="rounded border border-[#303744] bg-[#191d24] px-2 py-1 text-[#e8ecf2] hover:border-[#64b5f6] hover:text-white"
+                  className="rounded border border-[#d3d9e0] bg-[#f8f9fa] px-2 py-1 text-[#0f172a] hover:border-[#2563eb] hover:text-slate-900"
                 >
                   Set In [I]
                 </button>
                 <button
                   type="button"
                   onClick={() => setEnd(clamp(playhead, start + 0.2, duration))}
-                  className="rounded border border-[#303744] bg-[#191d24] px-2 py-1 text-[#e8ecf2] hover:border-[#64b5f6] hover:text-white"
+                  className="rounded border border-[#d3d9e0] bg-[#f8f9fa] px-2 py-1 text-[#0f172a] hover:border-[#2563eb] hover:text-slate-900"
                 >
                   Set Out [O]
                 </button>
@@ -548,7 +550,7 @@ export default function ClipTrimmerModal({
                       setEnd(duration);
                       seek(nextStart);
                     }}
-                    className="rounded border border-[#303744] bg-[#191d24] px-2 py-1 text-[#a0a9b6] hover:border-[#384252] hover:text-[#e8ecf2]"
+                    className="rounded border border-[#d3d9e0] bg-[#f8f9fa] px-2 py-1 text-[#475569] hover:border-[#bcc5cf] hover:text-slate-900"
                   >
                     Last {s}s
                   </button>
@@ -560,7 +562,7 @@ export default function ClipTrimmerModal({
                     setEnd(duration);
                     seek(0);
                   }}
-                  className="rounded border border-[#303744] bg-[#191d24] px-2 py-1 text-[#a0a9b6] hover:text-white"
+                  className="rounded border border-[#d3d9e0] bg-[#f8f9fa] px-2 py-1 text-[#475569] hover:text-slate-900"
                 >
                   Reset
                 </button>
@@ -570,7 +572,7 @@ export default function ClipTrimmerModal({
                 <button
                   type="button"
                   onClick={() => setMuted((m) => !m)}
-                  className="rounded border border-[#303744] bg-[#191d24] px-2 py-1 text-[#a0a9b6] hover:text-white"
+                  className="rounded border border-[#d3d9e0] bg-[#f8f9fa] px-2 py-1 text-[#475569] hover:text-slate-900"
                 >
                   {muted ? "Unmute" : "Mute"}
                 </button>
@@ -580,10 +582,10 @@ export default function ClipTrimmerModal({
           </div>
 
           {/* Action footer */}
-          <div className="mt-2 flex flex-wrap items-center justify-between gap-3 border-t border-[#303744] bg-[#14181f] px-5 py-3">
-            <div className="font-mono text-[11px] text-[#727e90]">
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-3 border-t border-[#d3d9e0] bg-[#f8f9fa] px-5 py-3">
+            <div className="font-mono text-[11px] text-[#475569]">
               {status ? (
-                <span className="text-[#64b5f6] font-semibold">{status}</span>
+                <span className="text-[#2563eb] font-semibold">{status}</span>
               ) : (
                 <span>Stream copy: keyframe snap, lossless, under 50 ms</span>
               )}
@@ -594,7 +596,7 @@ export default function ClipTrimmerModal({
                 type="button"
                 onClick={() => run("Discarding…", onDiscard)}
                 disabled={busy}
-                className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-[11px] font-medium text-red-300 hover:border-red-400 hover:bg-red-500/20 disabled:opacity-40"
+                className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-[11px] font-medium text-red-600 hover:border-red-400 hover:bg-red-500/20 disabled:opacity-40"
               >
                 Discard
               </button>
@@ -603,7 +605,7 @@ export default function ClipTrimmerModal({
                 type="button"
                 onClick={() => run("Opening in player…", onOpenExternal)}
                 disabled={busy}
-                className="rounded-lg border border-[#303744] bg-[#191d24] px-3 py-1.5 text-[11px] text-[#e8ecf2] hover:border-[#384252] hover:text-white disabled:opacity-40"
+                className="rounded-lg border border-[#d3d9e0] bg-[#f8f9fa] px-3 py-1.5 text-[11px] text-[#0f172a] hover:border-[#bcc5cf] hover:text-slate-900 disabled:opacity-40"
               >
                 Play
               </button>
@@ -613,7 +615,7 @@ export default function ClipTrimmerModal({
                 onClick={() => run("Revealing file…", onReveal)}
                 disabled={busy}
                 title="Show in Windows Explorer"
-                className="rounded-lg border border-[#303744] bg-[#191d24] px-3 py-1.5 text-[11px] text-[#e8ecf2] hover:border-[#384252] hover:text-white disabled:opacity-40"
+                className="rounded-lg border border-[#d3d9e0] bg-[#f8f9fa] px-3 py-1.5 text-[11px] text-[#0f172a] hover:border-[#bcc5cf] hover:text-slate-900 disabled:opacity-40"
               >
                 Reveal
               </button>
@@ -622,93 +624,16 @@ export default function ClipTrimmerModal({
                 type="button"
                 onClick={takeSnapshot}
                 disabled={busy}
-                className="rounded-lg border border-[#303744] bg-[#191d24] px-3 py-1.5 text-[11px] text-[#e8ecf2] hover:border-[#384252] hover:text-white disabled:opacity-40"
+                className="rounded-lg border border-[#d3d9e0] bg-[#f8f9fa] px-3 py-1.5 text-[11px] text-[#0f172a] hover:border-[#bcc5cf] hover:text-slate-900 disabled:opacity-40"
               >
                 Snapshot
               </button>
-
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={() => setGifOpen((v) => !v)}
-                  disabled={busy}
-                  className={cn(
-                    "rounded-lg border px-3 py-1.5 text-[11px] transition-colors disabled:opacity-40",
-                    gifOpen
-                      ? "border-[#64b5f6] bg-[#64b5f6]/20 text-[#64b5f6]"
-                      : "border-[#303744] bg-[#191d24] text-[#e8ecf2] hover:border-[#384252] hover:text-white",
-                  )}
-                >
-                  GIF
-                </button>
-                {gifOpen && (
-                  <div className="animate-pop absolute bottom-full right-0 z-20 mb-2 w-60 rounded-xl border border-[#384252] bg-[#191d24] p-3 shadow-xl">
-                    <div className="text-[11px] font-semibold text-[#e8ecf2]">
-                      Export GIF
-                    </div>
-                    <div className="mt-2">
-                      <div className="font-mono text-[10px] text-[#727e90]">WIDTH</div>
-                      <div className="mt-1 flex gap-1">
-                        {[320, 480, 720].map((w) => (
-                          <button
-                            key={w}
-                            type="button"
-                            onClick={() => setGifWidth(w)}
-                            className={cn(
-                              "flex-1 rounded border px-1 py-1 font-mono text-[10px]",
-                              gifWidth === w
-                                ? "border-[#64b5f6] bg-[#64b5f6]/20 text-[#64b5f6]"
-                                : "border-[#303744] bg-[#222832] text-[#a0a9b6] hover:text-white",
-                            )}
-                          >
-                            {w}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="mt-2">
-                      <div className="font-mono text-[10px] text-[#727e90]">FPS</div>
-                      <div className="mt-1 flex gap-1">
-                        {[10, 15, 20].map((f) => (
-                          <button
-                            key={f}
-                            type="button"
-                            onClick={() => setGifFps(f)}
-                            className={cn(
-                              "flex-1 rounded border px-1 py-1 font-mono text-[10px]",
-                              gifFps === f
-                                ? "border-[#64b5f6] bg-[#64b5f6]/20 text-[#64b5f6]"
-                                : "border-[#303744] bg-[#222832] text-[#a0a9b6] hover:text-white",
-                            )}
-                          >
-                            {f}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setGifOpen(false);
-                        void run(
-                          "Exporting GIF…",
-                          () => onExportGif(start, end, gifWidth, gifFps),
-                        );
-                      }}
-                      disabled={selectionSeconds < 0.2}
-                      className="mt-3 w-full rounded border border-[#64b5f6] bg-[#64b5f6] px-3 py-1.5 text-[11px] font-semibold text-[#0f172a] hover:bg-[#90caf9] disabled:opacity-40"
-                    >
-                      Export {selectionSeconds.toFixed(1)}s → GIF
-                    </button>
-                  </div>
-                )}
-              </div>
 
               <button
                 type="button"
                 onClick={() => run("Copying to clipboard…", onCopy)}
                 disabled={busy}
-                className="rounded-lg border border-[#303744] bg-[#191d24] px-3.5 py-1.5 text-[11px] text-[#e8ecf2] hover:border-[#64b5f6] hover:text-white disabled:opacity-40"
+                className="rounded-lg border border-[#d3d9e0] bg-[#f8f9fa] px-3.5 py-1.5 text-[11px] text-[#0f172a] hover:border-[#2563eb] hover:text-slate-900 disabled:opacity-40"
               >
                 Copy Video
               </button>
@@ -718,7 +643,7 @@ export default function ClipTrimmerModal({
                 onClick={() => run("Splitting at playhead…", () => onSplit(playhead))}
                 disabled={busy || playhead < 0.2 || playhead > duration - 0.2}
                 title="Cut the clip in two at the playhead without re-encoding"
-                className="rounded-lg border border-[#303744] bg-[#191d24] px-3 py-1.5 text-[11px] text-[#e8ecf2] hover:border-amber-400 hover:text-amber-200 disabled:opacity-40"
+                className="rounded-lg border border-[#d3d9e0] bg-[#f8f9fa] px-3 py-1.5 text-[11px] text-[#0f172a] hover:border-amber-400 hover:text-amber-800 disabled:opacity-40"
               >
                 Split
               </button>
@@ -727,7 +652,7 @@ export default function ClipTrimmerModal({
                 type="button"
                 onClick={() => run("Trimming…", () => onSaveTrimmed(start, end))}
                 disabled={busy || selectionSeconds < 0.2}
-                className="rounded-lg border border-[#64b5f6] bg-[#64b5f6] px-4 py-1.5 text-[12px] font-semibold text-[#0f172a] shadow-sm hover:bg-[#90caf9] disabled:opacity-40"
+                className="rounded-lg border border-[#2563eb] bg-[#2563eb] px-4 py-1.5 text-[12px] font-semibold text-white shadow-sm hover:bg-[#1d4ed8] disabled:opacity-40"
               >
                 Save Trimmed
               </button>

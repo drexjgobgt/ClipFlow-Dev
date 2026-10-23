@@ -75,9 +75,16 @@ pub struct Settings {
     /// When the foreground game leaves focus, save its last 30 s automatically.
     #[serde(default)]
     pub autosave_on_game_exit: bool,
-    /// Show the small always-on-top recording indicator while armed.
+    /// Legacy: the always-on-top HUD overlay was removed in favour of a
+    /// lower-overhead deck. Kept so older settings.json files still parse.
     #[serde(default)]
     pub hud_enabled: bool,
+    /// Game Mode: favours the game when the machine is busy. Caps capture at
+    /// 1080p/60, lowers the encoder quality-vs-speed bias and keeps background
+    /// UI work quiet. Enabled by default so existing users get the fix after
+    /// an update without touching settings.
+    #[serde(default = "default_true")]
+    pub performance_mode: bool,
     /// Privacy mode: when no game has the foreground focus, the buffer stops
     /// accumulating (and is cleared), so clips can never contain desktop
     /// content — only gameplay.
@@ -150,6 +157,7 @@ impl Default for Settings {
             organize_by_game: true,
             autosave_on_game_exit: false,
             hud_enabled: false,
+            performance_mode: true,
             privacy_pause_when_unfocused: false,
             game_volume: 100,
             mic_volume: 100,
@@ -237,15 +245,18 @@ impl Settings {
         cfg.target_fps = profile.target_fps.clamp(24, 240);
         cfg.bitrate_kbps = profile.bitrate_kbps.clamp(1_000, 150_000);
         cfg.codec = profile.codec;
+        self.apply_performance_caps(&mut cfg);
         cfg
     }
 
     pub fn to_recorder_config(&self) -> RecorderConfig {
-        RecorderConfig {
+        let mut cfg = RecorderConfig {
             buffer_seconds: self.buffer_seconds.clamp(5, 600),
             target_fps: self.target_fps.clamp(24, 240),
             width: 0,
             height: 0,
+            max_height: 0,
+            performance_mode: self.performance_mode,
             bitrate_kbps: self.bitrate_kbps.clamp(1_000, 150_000),
             codec: self.codec,
             monitor_index: self.monitor_index,
@@ -256,6 +267,24 @@ impl Settings {
             mic_device_id: self.mic_device_id.clone(),
             output_dir: PathBuf::from(&self.output_dir),
             output_subfolder: None,
+        };
+        self.apply_performance_caps(&mut cfg);
+        cfg
+    }
+
+    /// Game Mode keeps the recorder deliberately lightweight: the game keeps
+    /// priority on the GPU/CPU and a replay is still 1080p at up to 60 fps,
+    /// which is what instant-replay clips actually need. Users who want the
+    /// old full-resolution behaviour can turn Game Mode off in Settings.
+    fn apply_performance_caps(&self, cfg: &mut RecorderConfig) {
+        if self.performance_mode {
+            cfg.target_fps = cfg.target_fps.min(60);
+            // 0 means "native" — only downscale monitors above 1080p.
+            cfg.max_height = 1080;
+            cfg.performance_mode = true;
+        } else {
+            cfg.max_height = 0;
+            cfg.performance_mode = false;
         }
     }
 
@@ -287,5 +316,46 @@ impl Settings {
         }
         let json = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
         std::fs::write(&path, json).map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn performance_mode_caps_replay_to_1080p60() {
+        let mut s = Settings::default();
+        s.performance_mode = true;
+        s.target_fps = 144;
+        s.profiles = vec![CaptureProfile {
+            id: "test".into(),
+            name: "Test".into(),
+            buffer_seconds: 30,
+            target_fps: 120,
+            bitrate_kbps: 20_000,
+            codec: Codec::H264,
+        }];
+
+        let cfg = s.to_recorder_config();
+        assert_eq!(cfg.target_fps, 60);
+        assert_eq!(cfg.max_height, 1080);
+        assert!(cfg.performance_mode);
+
+        let profile_cfg = s.to_profile_config(&s.profiles[0]);
+        assert_eq!(profile_cfg.target_fps, 60, "profiles must respect Game Mode too");
+        assert_eq!(profile_cfg.max_height, 1080);
+    }
+
+    #[test]
+    fn performance_mode_off_keeps_native_resolution_and_fps() {
+        let mut s = Settings::default();
+        s.performance_mode = false;
+        s.target_fps = 144;
+
+        let cfg = s.to_recorder_config();
+        assert_eq!(cfg.target_fps, 144);
+        assert_eq!(cfg.max_height, 0);
+        assert!(!cfg.performance_mode);
     }
 }
