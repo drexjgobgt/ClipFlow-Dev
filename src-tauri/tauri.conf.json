@@ -64,7 +64,7 @@
       "requireLiteralLeadingDot": false
     },
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdCOTUwN0FGNDcwNEQ3QTMKUldTajF3Ukhyd2VWZTZDeno2SGY4cTFMMk84TzZrcXNoVUY1dEpxT1FIVEwzb0hQL3NkM2R6VU8K",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IENFOTY1RTA3NURDNUYzQTgKUldTbzg4VmRCMTZXem5yb2RTbHJHMEZZdnZyVkV4M2hvR2dFcGZEelpCdmR0Q3RzektWK1plenMK",
       "endpoints": [
         "https://github.com/drexjgobgt/ClipFlow-Dev/releases/latest/download/latest.json"
       ]
