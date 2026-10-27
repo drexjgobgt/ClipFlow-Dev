@@ -132,6 +132,8 @@ npm run tauri build
 
 Compiled application binaries and installer bundles are generated in `src-tauri/target/release/bundle/`.
 
+Maintainers: see [`docs/RELEASE_PROCESS.md`](docs/RELEASE_PROCESS.md) for the release checklist and for why automatic updates are currently disabled.
+
 ---
 
 ## License

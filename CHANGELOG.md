@@ -24,7 +24,7 @@ All notable changes to **ClipFlow** are documented here. The project follows [Ke
 
 ### Known limitation
 
-- **Automatic updates are disabled in this build.** The `TAURI_SIGNING_PRIVATE_KEY` secret does not match the minisign public key embedded in `tauri.conf.json`, so no signed `latest.json` can be produced — every release since v1.4.2 failed at the signing step for this reason. This release ships plain installers with `createUpdaterArtifacts: false`. The **Check for Updates** button now says so plainly and opens the Releases page instead of surfacing a raw plugin error. Recording, saving, trimming and the library are unaffected. Restoring auto-update requires a valid key pair; the steps are documented at the top of `.github/workflows/release.yml`, and users on the old key will need one manual reinstall.
+- **Automatic updates are disabled in this build.** The `TAURI_SIGNING_PRIVATE_KEY` secret does not match the minisign public key embedded in `tauri.conf.json`, so no signed `latest.json` can be produced — every release since v1.4.2 failed at the signing step for this reason. This release ships plain installers with `createUpdaterArtifacts: false`. The **Check for Updates** button now says so plainly and opens the Releases page instead of surfacing a raw plugin error. Recording, saving, trimming and the library are unaffected. Restoring auto-update requires a valid key pair; the steps are documented in [`docs/RELEASE_PROCESS.md`](docs/RELEASE_PROCESS.md), and users on the old key will need one manual reinstall.
 
 ### Removed
 
