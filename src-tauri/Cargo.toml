@@ -1,6 +1,6 @@
 [package]
 name = "clipflow"
-version = "1.5.0"
+version = "1.6.0"
 description = "ClipFlow - zero-bloat, privacy-first instant replay & game clipping for Windows"
 authors = ["ClipFlow Contributors"]
 license = "MIT"
@@ -27,8 +27,8 @@ tauri = { version = "2.1.1", features = [
 ] }
 tauri-plugin-global-shortcut = "2.0.1"
 tauri-plugin-opener = "2.2.2"
+tauri-plugin-single-instance = "2"
 tauri-plugin-dialog = "2.0.4"
-tauri-plugin-fs = "2.0.3"
 tauri-plugin-notification = "2.0.1"
 tauri-plugin-autostart = "2"
 tauri-plugin-updater = "2"
@@ -41,8 +41,6 @@ tokio = { version = "1.42.0", features = ["rt-multi-thread", "sync", "time", "ma
 
 # ------------------------------------------------------------ Sync / plumbing
 parking_lot = "0.12.3"
-crossbeam-channel = "0.5.13"
-once_cell = "1.20.2"
 thiserror = "2.0.6"
 log = "0.4.22"
 env_logger = "0.11.5"
@@ -51,12 +49,6 @@ base64 = "0.22.1"
 
 # Thumbnail encoding only - no decoders pulled in, keeps the binary tiny.
 image = { version = "0.25.5", default-features = false, features = ["png"] }
-
-# GIF export: pure-Rust encoder + NeuQuant palette quantiser. Both are tiny
-# and dependency-free, so "share this highlight" stays a one-shot export with
-# no ffmpeg and no bundled binaries.
-gif = "0.13"
-color_quant = "1.1"
 
 # ------------------------------------------------- Windows Graphics / Media
 # Everything below is compiled only on Windows targets. The feature list is
@@ -73,29 +65,20 @@ features = [
     "Win32_System_Power",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_Memory",
-    "Win32_System_Variant",
     "Win32_System_SystemInformation",
-    "Win32_System_LibraryLoader",
-    "Win32_Security",
     "Win32_UI_WindowsAndMessaging",
-    "Win32_UI_HiDpi",
     "Win32_Graphics_Gdi",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
     "Win32_Graphics_Direct3D",
     "Win32_Graphics_Direct3D11",
-    "Win32_Graphics_Direct3D_Fxc",
     "Win32_Media",
     "Win32_Media_Audio",
-    "Win32_Media_Audio_Endpoints",
-    "Win32_Media_KernelStreaming",
     "Win32_Media_MediaFoundation",
     "Win32_System_DataExchange",
     "Win32_System_Ole",
     "Win32_UI_Shell",
     "Win32_UI_Shell_PropertiesSystem",
-    "Win32_Storage_FileSystem",
-    "Win32_Storage_Packaging_Appx",
 ]
 
 [target.'cfg(windows)'.dependencies]

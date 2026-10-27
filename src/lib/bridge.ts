@@ -16,7 +16,6 @@ import type {
   ClipSavedPayload,
   EngineStats,
   ForegroundGame,
-  GifExportResult,
   MonitorInfo,
   PowerState,
   ProfileMapEntry,
@@ -177,6 +176,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   adaptiveEco: false,
   ecoBatteryThresholdPct: 30,
   ecoRamFreeGbs: 4,
+  checkUpdatesOnStartup: false,
 };
 
 let browserSettings: AppSettings = { ...DEFAULT_SETTINGS };
@@ -594,30 +594,6 @@ export const clipflow = {
       availableRamBytes: 8 * 1024 * 1024 * 1024,
       totalRamBytes: 16 * 1024 * 1024 * 1024,
     };
-  },
-
-  /**
-   * Exports the `start..end` selection as an animated GIF next to the source.
-   * Native: MF SourceReader decode + pure-Rust palette GIF. Browser preview:
-   * not supported (no GIF encoder) — throws a clear error.
-   */
-  async exportGif(
-    path: string,
-    startSeconds: number,
-    endSeconds: number,
-    width = 480,
-    fps = 15,
-  ): Promise<GifExportResult> {
-    if (isTauri()) {
-      return invoke<GifExportResult>("export_clip_gif", {
-        sourcePath: path,
-        startSeconds,
-        endSeconds,
-        width,
-        fps,
-      });
-    }
-    throw new Error("GIF export requires the native app");
   },
 
   /** Replaces the custom tags of a clip; persists in the local sidecar store. */

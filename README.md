@@ -48,7 +48,7 @@ See the [changelog](CHANGELOG.md) for the full list, or grab the [latest release
 - **Clip Library**: Browse recordings with lazy thumbnails, audio presence badges, tag filtering, and batch management.
 - **Privacy Gate**: Automatically pauses recording when sensitive applications, password prompts, or UAC elevation dialogues appear.
 - **Soft off-white desktop UI**: A clear, low-glare gray interface with plain-language status, a single primary Save action and technical details tucked away.
-- **Zero Telemetry**: No accounts, no background tracking services, and no cloud uploads. All video and metadata remain on your local machine.
+- **Zero Telemetry**: No accounts, no background tracking services, and no cloud uploads. All video and metadata remain on your local machine. Update checks are **opt-in and off by default** — see [Network access](#network-access).
 
 ---
 
@@ -88,8 +88,18 @@ Download the latest version from the [Releases](https://github.com/drexjgobgt/Cl
   - NVIDIA GeForce GTX 600 series or newer (NVENC)
   - AMD Radeon HD 7000 series or newer (AMF)
   - Intel HD Graphics 4200 or newer (QuickSync), **including integrated Iris Xe / UHD** — Game Mode automatically records at 720p/30 on integrated GPUs to protect game frame rate
-- **Memory**: Minimum 4 GB RAM (the circular buffer typically consumes 80–120 MB for a 60-second 1080p replay).
+- **Memory**: **8 GB recommended**, 4 GB supported with a shorter buffer. A 60-second 1080p replay typically uses 80–120 MB; the longest buffer settings on a high bitrate can reach ~1.5 GB, so ClipFlow limits the available buffer duration based on installed RAM.
 - **Storage**: Fast storage (SSD recommended) for saving MP4 clips.
+
+---
+
+## Network access
+
+ClipFlow is local-first. It never uploads clips, never sends telemetry, and needs no account.
+
+The only outbound request the app can make is a **single HTTPS fetch of the signed release manifest** from `github.com` — used to tell you when a new version exists. This is **off by default** and can be enabled in **Settings → Application & Updates → Check for updates at startup**. The manual **Check for Updates** button always works regardless of that setting.
+
+Recording, saving, trimming, splitting, tagging and browsing never touch the network.
 
 ---
 

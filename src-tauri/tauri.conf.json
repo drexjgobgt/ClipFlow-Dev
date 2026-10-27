@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "ClipFlow",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "identifier": "dev.clipflow.app",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -57,12 +57,9 @@
       }
     },
     "shortDescription": "Zero-bloat instant replay for Windows",
-    "longDescription": "ClipFlow keeps the last 30–120 seconds of your screen in a GPU-encoded rolling memory buffer and flushes it to an MP4 in under 50 ms when you press Alt + C. No account, no telemetry, no background updater."
+    "longDescription": "ClipFlow keeps the last 15–120 seconds of your screen in a GPU-encoded rolling memory buffer and flushes it to an MP4 in under 50 ms when you press Alt + C. No account, no telemetry, no background uploads. Update checks are opt-in and only fetch the signed release manifest from GitHub."
   },
   "plugins": {
-    "fs": {
-      "requireLiteralLeadingDot": false
-    },
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IENFOTY1RTA3NURDNUYzQTgKUldTbzg4VmRCMTZXem5yb2RTbHJHMEZZdnZyVkV4M2hvR2dFcGZEelpCdmR0Q3RzektWK1plenMK",
       "endpoints": [

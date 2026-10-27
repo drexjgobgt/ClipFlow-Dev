@@ -99,21 +99,6 @@ export interface SplitResult {
   partB: TrimResult;
 }
 
-/** Result of a GIF export (the trimmer's EXPORT GIF button). */
-export interface GifExportResult {
-  path: string;
-  file_name: string;
-  width: number;
-  height: number;
-  frame_count: number;
-  /** The frame rate the GIF actually plays at (100 / rounded delay). */
-  fps: number;
-  /** Real play duration in seconds (`frame_count * delay / 100`). */
-  duration_seconds: number;
-  size_bytes: number;
-  elapsed_ms: number;
-}
-
 export interface ClipSavedPayload {
   clip: ClipMetadata;
   flushMs: number;
@@ -199,6 +184,14 @@ export interface AppSettings {
   ecoBatteryThresholdPct: number;
   /** Free physical RAM (GiB) below which ECO kicks in. */
   ecoRamFreeGbs: number;
+  /**
+   * Check GitHub for a newer signed release at startup.
+   *
+   * Default `false`: ClipFlow promises "no telemetry, no background network",
+   * so the silent startup probe is opt-in. The manual button in Settings
+   * always works.
+   */
+  checkUpdatesOnStartup: boolean;
 }
 
 /** A point-in-time snapshot of the machine's power / memory state. */

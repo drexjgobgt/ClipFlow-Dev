@@ -25,8 +25,6 @@ pub struct AppState {
     pub settings: RwLock<Settings>,
     /// Favourites + custom tags, persisted to `clip_meta.json` in AppData.
     pub clip_meta: Mutex<ClipMetaStore>,
-    /// Guards against two Alt+C flushes racing each other.
-    pub flush_lock: Arc<parking_lot::Mutex<()>>,
 }
 
 impl AppState {
@@ -38,7 +36,6 @@ impl AppState {
             engine: Arc::new(CaptureEngine::new()),
             settings: RwLock::new(settings),
             clip_meta: Mutex::new(ClipMetaStore::load()),
-            flush_lock: Arc::new(parking_lot::Mutex::new(())),
         }
     }
 
@@ -146,6 +143,26 @@ pub fn set_buffer_seconds(state: State<'_, AppState>, seconds: u32) -> Result<()
 // ---------------------------------------------------------------------------
 // The Alt+C path
 // ---------------------------------------------------------------------------
+
+/// Sanitises a user-supplied name into a safe file stem.
+///
+/// Windows forbids `\ / : * ? " < > |` in file names, and a bare `.`/`..`
+/// would escape the output folder. This was duplicated in three places
+/// (`game_folder_name`, `rename_clip`, `save_png_snapshot`) with slightly
+/// different rules; one shared helper keeps them consistent.
+pub fn sanitize_file_stem(raw: &str, fallback: &str) -> String {
+    let cleaned: String = raw
+        .chars()
+        .filter(|c| !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+        .filter(|c| !c.is_control())
+        .collect();
+    let trimmed = cleaned.trim().trim_matches('.');
+    if trimmed.is_empty() {
+        fallback.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
 
 /// Sanitises a foreground exe into a safe per-game folder name. Returns `None`
 /// for our own process so pressing Alt+C on the deck never creates a "clipflow"
@@ -258,43 +275,22 @@ pub async fn save_instant_replay(
     .await
     .map_err(|e| format!("flush task panicked: {e}"))??;
 
-    // Thumbnails are decoded lazily by the gallery. Doing a full MP4 seek +
-    // decode + PNG encode here used to stall the async runtime right after the
-    // player pressed the save hotkey, mid-match.
-    let thumbnail = None;
-
-    let clip = ClipMetadata {
-        id: format!("{}-{}", result.file_name, chrono::Utc::now().timestamp_millis()),
-        path: result.path.clone(),
-        file_name: result.file_name.clone(),
-        title: result.file_name.trim_end_matches(".mp4").replace('_', " "),
-        duration_seconds: result.duration_seconds,
-        size_bytes: result.size_bytes,
-        created_unix_ms: chrono::Utc::now().timestamp_millis(),
-        width: result.width,
-        height: result.height,
-        fps: result.fps,
-        has_audio: result.has_audio,
-        game: game_folder.clone(),
-        thumbnail,
-        favorite: false,
-        tags: Vec::new(),
-    };
-
     // Auto-saves must never interrupt the user; only explicit UI saves open
     // the trimmer afterwards.
     let open_trimmer = match triggered_by.as_deref() {
         None | Some("ui") => state.settings.read().open_trimmer_after_save,
         _ => false,
     };
-    let _ = app.emit(
-        EVT_CLIP_SAVED,
-        ClipSavedPayload {
-            clip: clip.clone(),
-            flush_ms: result.flush_ms,
-            triggered_by: triggered_by.unwrap_or_else(|| "ui".into()),
-            open_trimmer,
-        },
+    // Shared with the hotkey and tray paths so every save emits exactly one
+    // event and builds identical metadata. The UI path never raises the deck
+    // (the user is already looking at it) and never steals focus.
+    let clip = crate::hotkeys::publish_saved_clip(
+        &app,
+        &result,
+        game_folder,
+        triggered_by.as_deref().unwrap_or("ui"),
+        open_trimmer,
+        false,
     );
 
     log::info!(
@@ -350,71 +346,6 @@ fn split_at_seconds(duration_seconds: f32, at_seconds: f32) -> Result<f32, Strin
     Ok(at_seconds.clamp(0.2, duration_seconds - 0.2))
 }
 
-/// Result of a GIF export (the trimmer's EXPORT GIF button).
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GifExportResult {
-    pub path: String,
-    pub file_name: String,
-    pub width: u32,
-    pub height: u32,
-    pub frame_count: u32,
-    /// The frame rate the GIF actually plays at (100 / rounded delay).
-    pub fps: f32,
-    /// Real play duration in seconds (`frame_count * delay / 100`).
-    pub duration_seconds: f32,
-    pub size_bytes: u64,
-    pub elapsed_ms: f32,
-}
-
-/// Exports the trimmed selection (`start_seconds`..`end_seconds`) as an
-/// animated GIF next to the source clip. Frames are decoded through the
-/// existing Media Foundation SourceReader, quantised to a 256-colour palette
-/// and encoded with the pure-Rust `gif` crate — no ffmpeg, one-shot export.
-#[tauri::command]
-pub async fn export_clip_gif(
-    source_path: String,
-    start_seconds: f32,
-    end_seconds: f32,
-    width: Option<u32>,
-    fps: Option<u32>,
-) -> Result<GifExportResult, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let source = PathBuf::from(&source_path);
-        if !source.exists() {
-            return Err(format!("source clip not found: {source_path}"));
-        }
-        let width = width.unwrap_or(480).clamp(160, 1920);
-        let fps = fps.unwrap_or(15).clamp(5, 30);
-        let dest = crate::media::gif::suggested_gif_path(&source);
-        let stats = crate::media::gif::export_gif(
-            &source,
-            &dest,
-            start_seconds,
-            end_seconds,
-            width,
-            fps,
-        )
-        .map_err(|e| e.to_string())?;
-        let size_bytes = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
-        Ok(GifExportResult {
-            path: dest.to_string_lossy().to_string(),
-            file_name: dest
-                .file_name()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default(),
-            width: stats.width,
-            height: stats.height,
-            frame_count: stats.frame_count,
-            fps: stats.fps_actual,
-            duration_seconds: stats.duration_seconds,
-            size_bytes,
-            elapsed_ms: stats.elapsed_ms,
-        })
-    })
-    .await
-    .map_err(|e| format!("gif task panicked: {e}"))?
-}
 
 /// Splits a clip in two at `at_seconds` with two stream-copy trims.
 ///
@@ -508,52 +439,68 @@ pub async fn trim_clip(
 }
 
 #[tauri::command]
-pub fn delete_clip(path: String) -> Result<(), String> {
-    library::delete_clip(Path::new(&path)).map_err(|e| e.to_string())
+pub async fn delete_clip(path: String) -> Result<(), String> {
+    // `async` + spawn_blocking: a non-async command runs on the main thread,
+    // and a slow/network path here would freeze the whole WebView.
+    tauri::async_runtime::spawn_blocking(move || {
+        library::delete_clip(Path::new(&path)).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("delete task panicked: {e}"))?
 }
 
 /// Removes every recorded clip from the output folder. Returns how many were
 /// deleted so the UI can toast a precise count.
 #[tauri::command]
-pub fn delete_all_clips(state: State<'_, AppState>) -> Result<u32, String> {
+pub async fn delete_all_clips(state: State<'_, AppState>) -> Result<u32, String> {
     let dir = state.output_dir();
-    let clips = library::scan_directory(&dir, false).map_err(|e| e.to_string())?;
-    let mut deleted = 0u32;
-    for c in &clips {
-        if library::delete_clip(Path::new(&c.path)).is_ok() {
-            deleted += 1;
+    tauri::async_runtime::spawn_blocking(move || {
+        let clips = library::scan_directory(&dir, false).map_err(|e| e.to_string())?;
+        let mut deleted = 0u32;
+        for c in &clips {
+            if library::delete_clip(Path::new(&c.path)).is_ok() {
+                deleted += 1;
+            }
         }
-    }
-    Ok(deleted)
+        Ok(deleted)
+    })
+    .await
+    .map_err(|e| format!("delete task panicked: {e}"))?
 }
 
 #[tauri::command]
-pub fn rename_clip(
+pub async fn rename_clip(
     state: State<'_, AppState>,
     path: String,
     new_name: String,
 ) -> Result<String, String> {
     let src = PathBuf::from(&path);
-    let sanitized: String = new_name
-        .chars()
-        .filter(|c| !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
-        .collect();
-    let name = if sanitized.to_ascii_lowercase().ends_with(".mp4") {
-        sanitized
-    } else {
-        format!("{sanitized}.mp4")
-    };
-    let dest = src
-        .parent()
-        .ok_or_else(|| "clip has no parent directory".to_string())?
-        .join(name);
-    std::fs::rename(&src, &dest).map_err(|e| e.to_string())?;
+    let dest = tauri::async_runtime::spawn_blocking(move || -> Result<PathBuf, String> {
+        let stem = sanitize_file_stem(&new_name, "");
+        if stem.is_empty() {
+            return Err("clip name cannot be empty".into());
+        }
+        let name = if stem.to_ascii_lowercase().ends_with(".mp4") {
+            stem
+        } else {
+            format!("{stem}.mp4")
+        };
+        let dest = src
+            .parent()
+            .ok_or_else(|| "clip has no parent directory".to_string())?
+            .join(name);
+        std::fs::rename(&src, &dest).map_err(|e| e.to_string())?;
+        Ok(dest)
+    })
+    .await
+    .map_err(|e| format!("rename task panicked: {e}"))??;
+
     // Keep favourites/tags attached to the clip across the rename: the sidecar
     // is keyed by path, so the entry moves to the new path.
     state
         .clip_meta
         .lock()
-        .migrate(&src.to_string_lossy(), &dest.to_string_lossy());
+        .migrate(&path, &dest.to_string_lossy());
     Ok(dest.to_string_lossy().to_string())
 }
 
@@ -575,14 +522,19 @@ pub fn copy_clips_to_clipboard(paths: Vec<String>) -> Result<(), String> {
 /// Deletes several clips at once (batch library management). Returns how many
 /// were actually removed so the UI can toast a precise count.
 #[tauri::command]
-pub fn delete_clips(paths: Vec<String>) -> Result<u32, String> {
-    let mut deleted = 0u32;
-    for p in &paths {
-        if library::delete_clip(Path::new(p)).is_ok() {
-            deleted += 1;
+pub async fn delete_clips(paths: Vec<String>) -> Result<u32, String> {
+    // Batch delete of hundreds of files must never block the main thread.
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut deleted = 0u32;
+        for p in &paths {
+            if library::delete_clip(Path::new(p)).is_ok() {
+                deleted += 1;
+            }
         }
-    }
-    Ok(deleted)
+        Ok(deleted)
+    })
+    .await
+    .map_err(|e| format!("delete task panicked: {e}"))?
 }
 
 /// Stars / unstars many clips in one sidecar persist. Returns how many
@@ -681,59 +633,36 @@ pub async fn extract_png_frame(
 /// Writes a PNG (base64 data URL) into the ClipFlow output folder. Only accepts
 /// valid PNG bytes so the webview can never write arbitrary files.
 #[tauri::command]
-pub fn save_png_snapshot(
+pub async fn save_png_snapshot(
     state: State<'_, AppState>,
     png_base64: String,
     base_name: String,
 ) -> Result<String, String> {
-    use base64::Engine;
-    let raw = png_base64.trim_start_matches("data:image/png;base64,");
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(raw)
-        .map_err(|e| format!("invalid png data: {e}"))?;
-    if bytes.len() < 8 || bytes[..8] != [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A] {
-        return Err("payload is not a PNG image".into());
-    }
-    let sanitized: String = base_name
-        .chars()
-        .filter(|c| !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
-        .collect();
-    let stem = if sanitized.is_empty() {
-        "snapshot".to_string()
-    } else {
-        sanitized.trim_end_matches(".png").to_string()
-    };
     let dir = state.output_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = dir.join(format!("{stem}.png"));
-    std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
-    Ok(path.to_string_lossy().to_string())
-}
-
-/// Reads a clip into memory and returns it as a base64 data URL so the webview
-/// can preview it without granting broad filesystem scope.
-#[tauri::command]
-pub async fn read_clip_as_data_url(path: String, max_bytes: Option<u64>) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let p = PathBuf::from(&path);
-        let len = std::fs::metadata(&p).map_err(|e| e.to_string())?.len();
-        let cap = max_bytes.unwrap_or(256 * 1024 * 1024);
-        if len > cap {
-            return Err(format!(
-                "clip is {:.0} MB which exceeds the {:.0} MB inline preview limit",
-                len as f64 / 1_048_576.0,
-                cap as f64 / 1_048_576.0
-            ));
-        }
-        let bytes = std::fs::read(&p).map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
         use base64::Engine;
-        Ok(format!(
-            "data:video/mp4;base64,{}",
-            base64::engine::general_purpose::STANDARD.encode(&bytes)
-        ))
+        let raw = png_base64.trim_start_matches("data:image/png;base64,");
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(raw)
+            .map_err(|e| format!("invalid png data: {e}"))?;
+        if bytes.len() < 8 || bytes[..8] != [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A] {
+            return Err("payload is not a PNG image".into());
+        }
+        let stem = sanitize_file_stem(&base_name, "snapshot");
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        // Never overwrite a previous snapshot: two shots of the same clip used
+        // to resolve to the same name and the first one vanished silently.
+        let mut path = dir.join(format!("{stem}.png"));
+        let mut n = 2u32;
+        while path.exists() {
+            path = dir.join(format!("{stem}_{n}.png"));
+            n += 1;
+        }
+        std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+        Ok(path.to_string_lossy().to_string())
     })
     .await
-    .map_err(|e| format!("read task panicked: {e}"))?
+    .map_err(|e| format!("snapshot task panicked: {e}"))?
 }
 
 // ---------------------------------------------------------------------------
@@ -768,7 +697,6 @@ pub struct SettingsPatch {
     pub auto_cleanup_days: Option<u32>,
     pub organize_by_game: Option<bool>,
     pub autosave_on_game_exit: Option<bool>,
-    pub hud_enabled: Option<bool>,
     pub performance_mode: Option<bool>,
     pub privacy_pause_when_unfocused: Option<bool>,
     pub game_volume: Option<u32>,
@@ -777,6 +705,7 @@ pub struct SettingsPatch {
     pub adaptive_eco: Option<bool>,
     pub eco_battery_threshold_pct: Option<u32>,
     pub eco_ram_free_gbs: Option<u32>,
+    pub check_updates_on_startup: Option<bool>,
 }
 
 #[tauri::command]
@@ -785,7 +714,13 @@ pub fn update_settings(
     app: AppHandle,
     patch: SettingsPatch,
 ) -> Result<Settings, String> {
-    let mut s = state.settings.write();
+    // Commit-on-success: the whole patch is applied to a *clone* and only
+    // written back once every fallible step succeeded. The old code mutated
+    // the live settings as it went, so a failure halfway through (folder
+    // creation, autostart registry, disk full on save) left memory and
+    // `settings.json` disagreeing — e.g. the hotkey re-registered with the OS
+    // but the new combo never persisted, so it silently reverted on restart.
+    let mut s = state.settings.read().clone();
 
     // Hotkeys must be re-registered with the OS before we persist them — if
     // another app owns the combo the whole patch fails and nothing is written.
@@ -807,18 +742,17 @@ pub fn update_settings(
             return Err(format!("'{v}' is already used by the save hotkey"));
         }
     }
-    if let Some(v) = patch.hotkey_save {
+    if let Some(v) = patch.hotkey_save.clone() {
         crate::hotkeys::rebind(&app, &s.hotkey_save, &v)?;
         s.hotkey_save = v;
     }
-    if let Some(v) = patch.hotkey_toggle {
+    if let Some(v) = patch.hotkey_toggle.clone() {
         crate::hotkeys::rebind(&app, &s.hotkey_toggle, &v)?;
         s.hotkey_toggle = v;
     }
 
     if let Some(v) = patch.buffer_seconds {
         s.buffer_seconds = v.clamp(5, 600);
-        state.engine.set_buffer_seconds(s.buffer_seconds);
     }
     if let Some(v) = patch.target_fps {
         s.target_fps = v.clamp(24, 240);
@@ -838,11 +772,8 @@ pub fn update_settings(
     if let Some(v) = patch.capture_microphone {
         s.capture_microphone = v;
     }
-    if let Some(v) = patch.output_dir {
+    if let Some(v) = patch.output_dir.clone() {
         std::fs::create_dir_all(&v).map_err(|e| e.to_string())?;
-        // Point the running engine at the new folder so the next Alt+C flush
-        // lands where the gallery is scanning — no restart required.
-        state.engine.set_output_dir(std::path::PathBuf::from(&v));
         s.output_dir = v;
     }
     if let Some(v) = patch.open_trimmer_after_save {
@@ -859,9 +790,6 @@ pub fn update_settings(
     }
     if let Some(v) = patch.always_on_top {
         s.always_on_top = v;
-        if let Some(w) = app.get_webview_window("main") {
-            let _ = w.set_always_on_top(v);
-        }
     }
     if let Some(v) = patch.auto_switch_profiles {
         s.auto_switch_profiles = v;
@@ -888,11 +816,6 @@ pub fn update_settings(
     if let Some(v) = patch.autosave_on_game_exit {
         s.autosave_on_game_exit = v;
     }
-    if let Some(v) = patch.hud_enabled {
-        // Deprecated: the HUD window is no longer shipped. Keep the field so
-        // older settings files round-trip cleanly.
-        s.hud_enabled = v;
-    }
     if let Some(v) = patch.performance_mode {
         s.performance_mode = v;
         // Capture caps (1080p/60 + encoder tuning) are read when the engine
@@ -900,31 +823,20 @@ pub fn update_settings(
     }
     if let Some(v) = patch.privacy_pause_when_unfocused {
         s.privacy_pause_when_unfocused = v;
-        // If privacy just turned on while no game is focused, gate the engine
-        // immediately instead of waiting for the next 2 s foreground poll.
-        // Turning it off un-gates right away too.
-        if v {
-            state.engine.set_privacy_gate(privacy_should_gate());
-        } else {
-            state.engine.set_privacy_gate(false);
-        }
     }
     if let Some(v) = patch.game_volume {
         s.game_volume = v.clamp(0, 100);
-        state.engine.set_audio_volumes(s.game_volume, s.mic_volume);
     }
     if let Some(v) = patch.mic_volume {
         s.mic_volume = v.clamp(0, 100);
-        state.engine.set_audio_volumes(s.game_volume, s.mic_volume);
     }
-    if let Some(v) = patch.mic_device_id {
+    if let Some(v) = patch.mic_device_id.clone() {
         let clean = if v.trim().is_empty() || v == "default" {
             None
         } else {
             Some(v)
         };
-        s.mic_device_id = clean.clone();
-        state.engine.set_mic_device(clean);
+        s.mic_device_id = clean;
     }
     if let Some(v) = patch.adaptive_eco {
         s.adaptive_eco = v;
@@ -937,8 +849,50 @@ pub fn update_settings(
     if let Some(v) = patch.eco_ram_free_gbs {
         s.eco_ram_free_gbs = v.clamp(1, 32);
     }
+    if let Some(v) = patch.check_updates_on_startup {
+        s.check_updates_on_startup = v;
+    }
+
+    // Persist first: if this fails, nothing below runs and the in-memory
+    // settings are untouched.
     s.save()?;
-    Ok(s.clone())
+
+    // ---- live side effects, applied only after the patch is durable ----
+    if patch.buffer_seconds.is_some() {
+        state.engine.set_buffer_seconds(s.buffer_seconds);
+    }
+    if let Some(dir) = patch.output_dir {
+        // Point the running engine at the new folder so the next Alt+C flush
+        // lands where the gallery is scanning — no restart required.
+        state.engine.set_output_dir(std::path::PathBuf::from(&dir));
+        // The trimmer's <video> loads through the asset: protocol, whose scope
+        // is a static glob in tauri.conf.json. Widen it to the new folder or
+        // previews break the moment the user moves the library.
+        crate::allow_asset_dir(&app, &dir);
+    }
+    if let Some(v) = patch.always_on_top {
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.set_always_on_top(v);
+        }
+    }
+    if let Some(v) = patch.privacy_pause_when_unfocused {
+        // If privacy just turned on while no game is focused, gate the engine
+        // immediately instead of waiting for the next foreground poll.
+        if v {
+            state.engine.set_privacy_gate(privacy_should_gate());
+        } else {
+            state.engine.set_privacy_gate(false);
+        }
+    }
+    if patch.game_volume.is_some() || patch.mic_volume.is_some() {
+        state.engine.set_audio_volumes(s.game_volume, s.mic_volume);
+    }
+    if patch.mic_device_id.is_some() {
+        state.engine.set_mic_device(s.mic_device_id.clone());
+    }
+
+    *state.settings.write() = s.clone();
+    Ok(s)
 }
 
 /// Battery + RAM snapshot for the adaptive ECO capture mode. Cheap local
@@ -948,128 +902,6 @@ pub fn get_power_state() -> Result<crate::power::PowerState, String> {
     crate::power::read_power_state()
 }
 
-/// Marks a window so Windows removes it from *every* capture path — DXGI
-/// Desktop Duplication (what the engine records with), Windows Graphics
-/// Capture, PrintWindow, BitBlt… The HUD floats above games while armed, and
-/// without this flag it would be baked into every clip. `exclude = true` sets
-/// WDA_EXCLUDEFROMCAPTURE (Windows 10 2004+), `false` restores WDA_NONE.
-/// Best-effort: on pre-2004 builds the flag is unsupported and ignored.
-#[cfg(windows)]
-fn set_window_excluded_from_capture(
-    window: &tauri::WebviewWindow,
-    exclude: bool,
-) -> Result<(), String> {
-    use windows::Win32::Foundation::HWND as WinHwnd;
-    use windows::Win32::UI::WindowsAndMessaging::{
-        SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE, WDA_NONE,
-    };
-    let hwnd = window.hwnd().map_err(|e| e.to_string())?;
-    let flag = if exclude {
-        WDA_EXCLUDEFROMCAPTURE
-    } else {
-        WDA_NONE
-    };
-    unsafe {
-        SetWindowDisplayAffinity(WinHwnd(hwnd.0 as *mut _), flag)
-            .map_err(|e| e.to_string())
-    }
-}
-
-#[cfg(not(windows))]
-fn set_window_excluded_from_capture(
-    _window: &tauri::WebviewWindow,
-    _exclude: bool,
-) -> Result<(), String> {
-    Ok(())
-}
-
-/// Re-asserts HWND_TOPMOST on the HUD. WebView2 can silently drop the topmost
-/// style (e.g. when another topmost window appears or focus changes), which is
-/// the classic "the overlay ended up below the game" symptom. Called after
-/// every show and periodically from the stats heartbeat while the HUD is up.
-#[cfg(windows)]
-pub(crate) fn force_topmost(window: &tauri::WebviewWindow) {
-    use windows::Win32::Foundation::HWND as WinHwnd;
-    use windows::Win32::UI::WindowsAndMessaging::{
-        SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    };
-    if let Ok(hwnd) = window.hwnd() {
-        unsafe {
-            let _ = SetWindowPos(
-                WinHwnd(hwnd.0 as *mut _),
-                HWND_TOPMOST,
-                0,
-                0,
-                0,
-                0,
-                SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE,
-            );
-        }
-    }
-}
-
-#[cfg(not(windows))]
-pub(crate) fn force_topmost(_window: &tauri::WebviewWindow) {}
-
-/// Shows / hides the always-on-top recording HUD window. While showing, it is
-/// positioned at the last spot the user dragged it to (or the deck's
-/// bottom-right corner on first use) and excluded from screen capture so it
-/// never appears in recorded clips. The HUD receives mouse input so it can be
-/// dragged around, but never steals focus (config `focus: false`).
-#[tauri::command]
-pub fn set_hud_visible(app: AppHandle, visible: bool) -> Result<(), String> {
-    const HUD_W: i32 = 540;
-    const HUD_H: i32 = 64;
-    let Some(hud) = app.get_webview_window("hud") else {
-        return Ok(());
-    };
-    if !visible {
-        // Persist the exact spot the HUD landed: the throttled Moved handler
-        // may have skipped the final move events of a drag, so capture the
-        // real position now (one write, no throttle needed).
-        if let Ok(pos) = hud.outer_position() {
-            if let Some(state) = app.try_state::<AppState>() {
-                let mut s = state.settings.write();
-                s.hud_position = Some((pos.x, pos.y));
-                let _ = s.save();
-            }
-        }
-        // Remove the capture exclusion first (restore WDA_NONE), then hide.
-        let _ = set_window_excluded_from_capture(&hud, false);
-        let _ = hud.hide();
-        return Ok(());
-    }
-    // Restore the position the user dragged the HUD to; fall back to the
-    // deck's bottom-right corner the very first time.
-    let saved = app
-        .try_state::<AppState>()
-        .map(|s| s.settings.read().hud_position)
-        .unwrap_or(None);
-    let mut position = tauri::PhysicalPosition::new(0, 0);
-    match saved {
-        Some((x, y)) => {
-            position.x = x.max(0);
-            position.y = y.max(0);
-        }
-        None => {
-            if let Some(main) = app.get_webview_window("main") {
-                if let (Ok(size), Ok(pos)) = (main.inner_size(), main.outer_position()) {
-                    position.x = pos.x as i32 + size.width as i32 - HUD_W - 18;
-                    position.y = pos.y as i32 + size.height as i32 - HUD_H - 18;
-                }
-            }
-        }
-    }
-    let _ = hud.set_position(position);
-    let _ = hud.set_always_on_top(true);
-    let _ = hud.show();
-    // From the moment it is visible it must be invisible to capture, and
-    // pinned above every window — WebView2 can silently drop the topmost
-    // style, so assert it right after showing.
-    force_topmost(&hud);
-    let _ = set_window_excluded_from_capture(&hud, true);
-    Ok(())
-}
 
 // ---------------------------------------------------------------------------
 // Clip metadata (favourites + tags)
@@ -1252,59 +1084,20 @@ pub fn apply_profile(
 }
 
 #[tauri::command]
-pub fn get_monitors() -> Result<Vec<MonitorInfo>, String> {
-    Ok(enumerate_monitors())
+pub async fn get_monitors() -> Result<Vec<MonitorInfo>, String> {
+    // DXGI adapter/output enumeration is a COM walk; it must not run on the
+    // main thread (a slow driver would freeze the window).
+    tauri::async_runtime::spawn_blocking(enumerate_monitors)
+        .await
+        .map_err(|e| format!("monitor query panicked: {e}"))
 }
 
 #[tauri::command]
-pub fn get_audio_input_devices() -> Result<Vec<crate::media::audio::AudioDevice>, String> {
-    Ok(crate::media::audio::enumerate_audio_devices())
-}
-
-#[tauri::command]
-pub fn get_output_dir(state: State<'_, AppState>) -> Result<String, String> {
-    Ok(state.settings.read().output_dir.clone())
-}
-
-/// Re-registers the save hotkey at runtime (kept for API symmetry; the UI goes
-/// through `update_settings` so save + toggle rebind through the same path).
-#[tauri::command]
-pub fn set_save_hotkey(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    accelerator: String,
-) -> Result<String, String> {
-    let previous = state.settings.read().hotkey_save.clone();
-    crate::hotkeys::rebind(&app, &previous, &accelerator)?;
-    let mut s = state.settings.write();
-    s.hotkey_save = accelerator.clone();
-    s.save()?;
-    Ok(accelerator)
-}
-
-/// Re-registers the arm/disarm hotkey at runtime.
-#[tauri::command]
-pub fn set_toggle_hotkey(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    accelerator: String,
-) -> Result<String, String> {
-    let previous = state.settings.read().hotkey_toggle.clone();
-    crate::hotkeys::rebind(&app, &previous, &accelerator)?;
-    let mut s = state.settings.write();
-    s.hotkey_toggle = accelerator.clone();
-    s.save()?;
-    Ok(accelerator)
-}
-
-#[tauri::command]
-pub fn show_main_window(app: AppHandle) -> Result<(), String> {
-    if let Some(w) = app.get_webview_window("main") {
-        let _ = w.show();
-        let _ = w.unminimize();
-        let _ = w.set_focus();
-    }
-    Ok(())
+pub async fn get_audio_input_devices() -> Result<Vec<crate::media::audio::AudioDevice>, String> {
+    // COM enumeration + property-store reads for every capture endpoint.
+    tauri::async_runtime::spawn_blocking(crate::media::audio::enumerate_audio_devices)
+        .await
+        .map_err(|e| format!("audio device query panicked: {e}"))
 }
 
 #[tauri::command]
@@ -1319,27 +1112,6 @@ pub fn hide_main_window(app: AppHandle) -> Result<(), String> {
 pub fn quit_app(state: State<'_, AppState>) -> Result<(), String> {
     state.engine.stop();
     std::process::exit(0);
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SystemReport {
-    pub os: String,
-    pub app_version: String,
-    pub process_rss_bytes: u64,
-    pub output_dir: String,
-    pub monitors: Vec<MonitorInfo>,
-}
-
-#[tauri::command]
-pub fn get_system_report(state: State<'_, AppState>) -> Result<SystemReport, String> {
-    Ok(SystemReport {
-        os: std::env::consts::OS.to_string(),
-        app_version: env!("CARGO_PKG_VERSION").to_string(),
-        process_rss_bytes: crate::media::recorder::process_rss_bytes(),
-        output_dir: state.settings.read().output_dir.clone(),
-        monitors: enumerate_monitors(),
-    })
 }
 
 // ---------------------------------------------------------------------------

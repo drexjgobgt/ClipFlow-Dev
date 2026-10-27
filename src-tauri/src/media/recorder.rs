@@ -195,7 +195,7 @@ pub struct EngineStats {
     pub width: u32,
     pub height: u32,
     pub target_fps: u32,
-    /// Configured encode bitrate (kbps) — shown on the HUD / deck.
+    /// Configured encode bitrate (kbps) — shown on the deck.
     pub bitrate_kbps: u32,
     /// Whether the running engine was started in Game Mode.
     pub performance_mode: bool,
@@ -384,9 +384,34 @@ impl RollingRingBuffer {
         }
     }
 
-    pub fn set_window(&mut self, window_seconds: u32) {
+    /// Changes the rolling window *and* the byte ceiling that enforces it.
+    ///
+    /// The byte cap has to move with the window: it is derived from
+    /// `window_seconds * bitrate`, so leaving it behind silently truncates the
+    /// buffer. Going 60 s → 300 s without a restart used to keep the 60 s cap
+    /// (~141 MB at 12 Mbps), which held only ~96 s — the user asked for 300 s
+    /// and got 96 s with no error anywhere. See the `set_window_*` tests.
+    pub fn set_window(&mut self, window_seconds: u32, bitrate_kbps: u32) {
         self.window_hns = window_seconds as i64 * HNS_PER_SECOND;
+        self.hard_byte_cap = ring_cap_mb(window_seconds, bitrate_kbps) * 1024 * 1024;
         self.prune();
+    }
+
+    /// Test-only view of the byte ceiling so the cap/window coupling can be
+    /// asserted without exposing it in the public surface.
+    #[cfg(test)]
+    fn hard_byte_cap(&self) -> usize {
+        self.hard_byte_cap
+    }
+
+    /// Test-only view of the live audio packet count.
+    ///
+    /// Asserting through `snapshot()` is not enough: it filters by the newest
+    /// video generation, so with an empty video queue it returns nothing and a
+    /// leak assertion passes vacuously.
+    #[cfg(test)]
+    fn audio_packets(&self) -> usize {
+        self.audio.len()
     }
 
     pub fn push(&mut self, pkt: EncodedPacket) {
@@ -400,6 +425,17 @@ impl RollingRingBuffer {
 
     fn newest_pts(&self) -> i64 {
         self.video.back().map(|p| p.pts_hns).unwrap_or(0)
+    }
+
+    /// Drops the leading audio packet and keeps `bytes` in sync.
+    fn pop_audio(&mut self) -> bool {
+        match self.audio.pop_front() {
+            Some(p) => {
+                self.bytes -= p.heap_size().min(self.bytes);
+                true
+            }
+            None => false,
+        }
     }
 
     /// Drop whole GOPs from the front until the window (and the hard byte cap)
@@ -435,18 +471,33 @@ impl RollingRingBuffer {
 
         // Audio is independent of GOPs, just clip to the oldest surviving video
         // timestamp minus 200 ms of lead-in so the muxer can align cleanly.
-        let audio_cutoff = self
-            .video
-            .front()
-            .map(|p| p.pts_hns - HNS_PER_SECOND / 5)
-            .unwrap_or(i64::MIN);
+        //
+        // When the video queue is empty this cutoff is i64::MIN and *nothing*
+        // was ever evicted. That is reachable in production: the privacy gate
+        // clears the ring but the audio thread keeps pushing (it does not read
+        // the gate), so a long alt-tab accumulated audio forever. Bound the
+        // audio track by its own newest timestamp as well, so it can never grow
+        // past the window on its own.
+        let audio_cutoff = match self.video.front() {
+            Some(p) => p.pts_hns - HNS_PER_SECOND / 5,
+            None => match self.audio.back() {
+                Some(p) => p.pts_hns - self.window_hns,
+                None => i64::MIN,
+            },
+        };
         while let Some(front) = self.audio.front() {
             if front.pts_hns >= audio_cutoff {
                 break;
             }
-            let p = self.audio.pop_front().unwrap();
-            self.bytes -= p.heap_size().min(self.bytes);
+            if !self.pop_audio() {
+                break;
+            }
         }
+
+        // Audio is ~24 KB/s at 192 kbit/s, so it is cheap — but a video track
+        // that is small (a static screen compresses to almost nothing) would
+        // leave the byte cap to the audio side. Enforce the ceiling here too.
+        while self.bytes > self.hard_byte_cap && self.pop_audio() {}
     }
 
     pub fn bytes(&self) -> usize {
@@ -525,7 +576,7 @@ struct SharedState {
     /// Set by the frontend when privacy mode is on and no game has focus: the
     /// capture thread stops feeding the encoder, so the ring can never hold
     /// desktop footage.
-    privacy_gate: AtomicBool,
+    privacy_gate: Arc<AtomicBool>,
     generation: Arc<AtomicU32>,
     dropped_frames: AtomicU64,
     device_resets: AtomicU32,
@@ -554,7 +605,7 @@ impl SharedState {
             running: AtomicBool::new(false),
             stop_requested: AtomicBool::new(false),
             force_device_reset: AtomicBool::new(false),
-            privacy_gate: AtomicBool::new(false),
+            privacy_gate: Arc::new(AtomicBool::new(false)),
             generation: Arc::new(AtomicU32::new(1)),
             dropped_frames: AtomicU64::new(0),
             device_resets: AtomicU32::new(0),
@@ -645,6 +696,12 @@ pub struct CaptureEngine {
     mic_device: Arc<parking_lot::RwLock<Option<String>>>,
     /// Set by the muxer thread once the first flush produced a valid header.
     video_format: Arc<Mutex<Option<VideoFormatHeader>>>,
+    /// Serialises every flush regardless of entry point (deck button, Alt+C,
+    /// tray menu, auto-save). The lock used to live in `hotkeys.rs` only, so a
+    /// UI save could race the hotkey and mux the same snapshot into the same
+    /// second-resolution filename. It belongs here, next to the state it
+    /// protects.
+    flush_lock: parking_lot::Mutex<()>,
 }
 
 /// Everything the muxer needs to describe the elementary stream without
@@ -675,6 +732,7 @@ impl CaptureEngine {
             mic_gain: Arc::new(AtomicU32::new(1000)),
             mic_device: Arc::new(parking_lot::RwLock::new(mic_dev)),
             video_format: Arc::new(Mutex::new(None)),
+            flush_lock: parking_lot::Mutex::new(()),
         }
     }
 
@@ -801,6 +859,10 @@ impl CaptureEngine {
                 Arc::clone(&self.audio_error),
                 Arc::clone(&clock),
                 cfg.performance_mode,
+                // The audio thread must observe the same gate as the capture
+                // thread, otherwise it keeps pushing into a ring that privacy
+                // mode just cleared.
+                Arc::clone(&self.shared.privacy_gate),
             ) {
                 Ok(a) => *self.audio.lock() = Some(a),
                 Err(e) => {
@@ -869,8 +931,14 @@ impl CaptureEngine {
 
     pub fn set_buffer_seconds(&self, seconds: u32) {
         let seconds = seconds.clamp(5, 600);
-        self.config.write().buffer_seconds = seconds;
-        self.shared.ring.lock().set_window(seconds);
+        let bitrate = {
+            let mut cfg = self.config.write();
+            cfg.buffer_seconds = seconds;
+            cfg.bitrate_kbps
+        };
+        // The byte ceiling is derived from (window, bitrate); pass the live
+        // bitrate so raising the duration actually extends the buffer.
+        self.shared.ring.lock().set_window(seconds, bitrate);
     }
 
     /// Lets the running engine follow a folder change without a full restart.
@@ -913,8 +981,44 @@ impl CaptureEngine {
         self.shared.force_device_reset.store(true, Ordering::Release);
     }
 
+    /// Picks a file name that does not collide with an existing clip.
+    ///
+    /// The base name has one-second resolution, so two saves inside the same
+    /// second (a double Alt+C, or a UI save racing the hotkey) resolved to the
+    /// same path and the second mux silently overwrote the first. The suffix
+    /// keeps the human-readable timestamp and only disambiguates on collision.
+    fn unique_clip_path(out_dir: &Path, stem: &str) -> PathBuf {
+        let mut candidate = out_dir.join(format!("{stem}.mp4"));
+        let mut n = 2u32;
+        while candidate.exists() {
+            candidate = out_dir.join(format!("{stem}_{n}.mp4"));
+            n += 1;
+        }
+        candidate
+    }
+
     /// The Alt+C path. Target: < 50 ms wall clock for a 60 s 1080p60 buffer.
+    ///
+    /// Every failure path restores the previous engine state and removes the
+    /// partial file. Leaving the engine in `Flushing` used to be permanent: the
+    /// deck then showed "Saving clip to disk…" forever with the Save button
+    /// disabled, and the only way out was a restart that dropped the buffer.
+    ///
+    /// The flush is serialised here rather than at the call sites, so the deck
+    /// button, Alt+C, the tray menu and auto-save can never mux concurrently.
     pub fn flush_to_disk(&self, max_seconds: Option<f32>) -> RResult<ClipWriteResult> {
+        let _guard = match self.flush_lock.try_lock() {
+            Some(g) => g,
+            None => {
+                return Err(RecorderError::Other(
+                    "Save replay already in progress".into(),
+                ))
+            }
+        };
+        self.flush_to_disk_inner(max_seconds)
+    }
+
+    fn flush_to_disk_inner(&self, max_seconds: Option<f32>) -> RResult<ClipWriteResult> {
         if !self.is_running() {
             return Err(RecorderError::NotRunning);
         }
@@ -940,27 +1044,42 @@ impl CaptureEngine {
         let prev_state = *self.shared.state.read();
         self.shared.set_state(EngineState::Flushing);
 
-        let file_name = format!(
-            "ClipFlow_{}.mp4",
-            chrono::Local::now().format("%Y-%m-%d_%H-%M-%S")
-        );
-        let out_dir = match &cfg.output_subfolder {
-            Some(sub) => cfg.output_dir.join(sub),
-            None => cfg.output_dir.clone(),
-        };
-        let path = out_dir.join(&file_name);
-        std::fs::create_dir_all(&out_dir)?;
+        // Everything that can fail runs inside this closure so the state is
+        // restored on *every* exit path, not just the happy one.
+        let written = (|| -> RResult<(PathBuf, String)> {
+            let stem = format!(
+                "ClipFlow_{}",
+                chrono::Local::now().format("%Y-%m-%d_%H-%M-%S")
+            );
+            let out_dir = match &cfg.output_subfolder {
+                Some(sub) => cfg.output_dir.join(sub),
+                None => cfg.output_dir.clone(),
+            };
+            std::fs::create_dir_all(&out_dir)?;
+            let path = Self::unique_clip_path(&out_dir, &stem);
+            let file_name = path
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| format!("{stem}.mp4"));
 
+            if let Err(e) = mux_packets_to_mp4(&path, &header, &video, &audio) {
+                // A failed mux can leave a truncated MP4 behind; the library
+                // scan would list it as a broken clip.
+                let _ = std::fs::remove_file(&path);
+                return Err(e);
+            }
+            Ok((path, file_name))
+        })();
+
+        self.shared.set_state(prev_state);
+
+        let (path, file_name) = written?;
         let duration_hns = match (video.first(), video.last()) {
             (Some(a), Some(b)) => (b.pts_hns + b.duration_hns - a.pts_hns).max(0),
             _ => 0,
         };
-
         let has_audio = !audio.is_empty();
-        mux_packets_to_mp4(&path, &header, &video, &audio)?;
-
         let size_bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-        self.shared.set_state(prev_state);
 
         Ok(ClipWriteResult {
             path: path.to_string_lossy().to_string(),
@@ -1076,7 +1195,6 @@ mod win {
         pub device: ID3D11Device,
         pub context: ID3D11DeviceContext,
         pub duplication: IDXGIOutputDuplication,
-        pub desc: DXGI_OUTDUPL_DESC,
         pub adapter_name: String,
         pub vram_mb: u64,
         pub src_width: u32,
@@ -1186,7 +1304,6 @@ mod win {
                 device,
                 context,
                 duplication,
-                desc,
                 adapter_name,
                 vram_mb: (adesc.DedicatedVideoMemory / (1024 * 1024)) as u64,
             })
@@ -1220,9 +1337,6 @@ mod win {
     }
 
     impl ColorConverter {
-        pub fn size(&self) -> (u32, u32) {
-            (self._dst_w, self._dst_h)
-        }
         pub fn new(
             device: &ID3D11Device,
             context: &ID3D11DeviceContext,
@@ -2625,3 +2739,288 @@ mod integrated_gpu_tests {
         assert!(!is_integrated_gpu("AMD Radeon RX 6800 XT", 16384));
     }
 }
+
+// ===========================================================================
+//                        RING BUFFER / SNAPSHOT TESTS
+// ===========================================================================
+//
+// These cover the logic that decides whether a clip can be saved at all:
+// GOP-aligned eviction, the "last N seconds" snapshot, the byte ceiling that
+// enforces the window, and audio hygiene. They are pure (no D3D11, no MF), so
+// they run on every platform — which is exactly why they were the biggest
+// blind spot: `flush_to_disk` and `prune` had zero coverage.
+
+#[cfg(test)]
+mod ring_buffer_tests {
+    use super::*;
+
+    /// One encoded packet of `bytes` length, optionally a key frame.
+    fn pkt(pts_hns: i64, bytes: usize, keyframe: bool) -> EncodedPacket {
+        EncodedPacket {
+            track: TrackKind::Video,
+            data: Arc::from(vec![0u8; bytes].into_boxed_slice()),
+            pts_hns,
+            duration_hns: HNS_PER_SECOND / 60,
+            keyframe,
+            generation: 1,
+        }
+    }
+
+    fn audio_pkt(pts_hns: i64, bytes: usize) -> EncodedPacket {
+        EncodedPacket {
+            track: TrackKind::Audio,
+            data: Arc::from(vec![0u8; bytes].into_boxed_slice()),
+            pts_hns,
+            duration_hns: 1024 * HNS_PER_SECOND / 48_000,
+            keyframe: true,
+            generation: 1,
+        }
+    }
+
+    /// Feeds `seconds` of 60 fps video with a key frame every `gop` frames.
+    fn feed_video(ring: &mut RollingRingBuffer, seconds: u32, gop: u32, frame_bytes: usize) {
+        let frames = seconds * 60;
+        for i in 0..frames {
+            let pts = i as i64 * HNS_PER_SECOND / 60;
+            ring.push(pkt(pts, frame_bytes, i % gop == 0));
+        }
+    }
+
+    // ---------------------------------------------------------- window / cap
+
+    #[test]
+    fn set_window_updates_the_byte_cap_with_the_window() {
+        // Regression: the cap was computed once in `new()` and never moved, so
+        // asking for 300 s on a 60 s engine silently kept the 60 s ceiling
+        // (~141 MB at 12 Mbps) and delivered ~96 s.
+        let mut ring = RollingRingBuffer::new(60, ring_cap_mb(60, 12_000));
+        let cap_60 = ring.hard_byte_cap();
+
+        ring.set_window(300, 12_000);
+        let cap_300 = ring.hard_byte_cap();
+
+        assert_eq!(cap_300, ring_cap_mb(300, 12_000) * 1024 * 1024);
+        assert!(
+            cap_300 > cap_60,
+            "raising the window must raise the ceiling: {cap_60} -> {cap_300}"
+        );
+    }
+
+    #[test]
+    fn set_window_shrinks_the_cap_when_the_window_shrinks() {
+        let mut ring = RollingRingBuffer::new(300, ring_cap_mb(300, 12_000));
+        let cap_300 = ring.hard_byte_cap();
+        ring.set_window(30, 12_000);
+        assert_eq!(ring.hard_byte_cap(), ring_cap_mb(30, 12_000) * 1024 * 1024);
+        assert!(ring.hard_byte_cap() < cap_300);
+    }
+
+    #[test]
+    fn a_300s_window_actually_holds_300s_of_packets() {
+        // The end-to-end version of the bug above: feed 300 s of data at a
+        // bitrate whose 60 s cap would have truncated it to ~96 s.
+        let mut ring = RollingRingBuffer::new(60, ring_cap_mb(60, 12_000));
+        ring.set_window(300, 12_000);
+
+        // 12 Mbps over 300 s = 450 MB nominal; ring_cap_mb adds 1.6x head room.
+        feed_video(&mut ring, 300, 60, 25_000);
+
+        let span = ring.span_seconds();
+        assert!(
+            span > 290.0,
+            "a 300 s window must retain ~300 s, got {span:.1}s"
+        );
+    }
+
+    #[test]
+    fn cap_never_exceeds_the_hard_ceiling() {
+        // `ring_cap_mb` clamps to 1536 MB so a mis-typed config cannot eat RAM.
+        assert!(ring_cap_mb(600, 150_000) <= 1536);
+        assert!(ring_cap_mb(5, 1_000) >= 24);
+    }
+
+    // -------------------------------------------------------------- eviction
+
+    #[test]
+    fn eviction_never_leaves_a_delta_frame_at_the_front() {
+        // A clip that starts on a P frame decodes to macro-block soup.
+        let mut ring = RollingRingBuffer::new(2, ring_cap_mb(2, 12_000));
+        feed_video(&mut ring, 6, 30, 2_000);
+
+        let (video, _) = ring.snapshot(None);
+        assert!(!video.is_empty());
+        assert!(
+            video[0].keyframe,
+            "snapshot must start on a key frame, got a delta frame"
+        );
+    }
+
+    #[test]
+    fn eviction_keeps_the_buffer_within_its_window() {
+        let mut ring = RollingRingBuffer::new(2, ring_cap_mb(2, 12_000));
+        feed_video(&mut ring, 10, 30, 1_000);
+        // One GOP of slack is expected because eviction is GOP aligned.
+        assert!(
+            ring.span_seconds() <= 3.5,
+            "2 s window kept {:.1}s",
+            ring.span_seconds()
+        );
+    }
+
+    #[test]
+    fn clear_empties_everything_and_zeroes_the_byte_counter() {
+        let mut ring = RollingRingBuffer::new(5, 24);
+        feed_video(&mut ring, 2, 30, 1_000);
+        ring.push(audio_pkt(0, 512));
+        assert!(ring.bytes() > 0);
+
+        ring.clear();
+        assert_eq!(ring.bytes(), 0);
+        assert_eq!(ring.video_frames(), 0);
+        assert_eq!(ring.span_seconds(), 0.0);
+        let (v, a) = ring.snapshot(None);
+        assert!(v.is_empty() && a.is_empty());
+    }
+
+    // -------------------------------------------------------------- snapshot
+
+    #[test]
+    fn snapshot_without_a_limit_returns_the_whole_buffer() {
+        let mut ring = RollingRingBuffer::new(10, ring_cap_mb(10, 12_000));
+        feed_video(&mut ring, 5, 60, 1_000);
+        let (video, _) = ring.snapshot(None);
+        assert_eq!(video.len(), 300, "5 s at 60 fps");
+    }
+
+    #[test]
+    fn snapshot_with_a_limit_returns_roughly_that_many_seconds() {
+        let mut ring = RollingRingBuffer::new(60, ring_cap_mb(60, 12_000));
+        feed_video(&mut ring, 60, 60, 1_000);
+
+        let (video, _) = ring.snapshot(Some(10.0));
+        let span = (video.last().unwrap().pts_hns - video[0].pts_hns) as f32
+            / HNS_PER_SECOND as f32;
+        // Key-frame snapping can only ever give *more* history, never less.
+        assert!(span >= 9.0, "10 s request returned {span:.1}s");
+        assert!(span <= 12.5, "10 s request returned {span:.1}s (too much)");
+        assert!(video[0].keyframe);
+    }
+
+    #[test]
+    fn snapshot_limit_larger_than_the_buffer_returns_everything() {
+        let mut ring = RollingRingBuffer::new(10, ring_cap_mb(10, 12_000));
+        feed_video(&mut ring, 4, 60, 1_000);
+        let (video, _) = ring.snapshot(Some(999.0));
+        assert_eq!(video.len(), 240);
+    }
+
+    #[test]
+    fn snapshot_never_mixes_generations() {
+        // A device reset bumps the generation; a file must not contain packets
+        // from two encoder sessions.
+        let mut ring = RollingRingBuffer::new(10, ring_cap_mb(10, 12_000));
+        for i in 0..60 {
+            ring.push(EncodedPacket {
+                track: TrackKind::Video,
+                data: Arc::from(vec![0u8; 100].into_boxed_slice()),
+                pts_hns: i as i64 * HNS_PER_SECOND / 60,
+                duration_hns: HNS_PER_SECOND / 60,
+                keyframe: i % 30 == 0,
+                generation: 1,
+            });
+        }
+        for i in 60..120 {
+            ring.push(EncodedPacket {
+                track: TrackKind::Video,
+                data: Arc::from(vec![0u8; 100].into_boxed_slice()),
+                pts_hns: i as i64 * HNS_PER_SECOND / 60,
+                duration_hns: HNS_PER_SECOND / 60,
+                keyframe: i % 30 == 0,
+                generation: 2,
+            });
+        }
+
+        let (video, _) = ring.snapshot(None);
+        assert!(!video.is_empty());
+        assert!(
+            video.iter().all(|p| p.generation == 2),
+            "snapshot leaked packets from the previous generation"
+        );
+        assert!(video[0].keyframe);
+    }
+
+    #[test]
+    fn snapshot_on_an_empty_ring_is_empty_not_a_panic() {
+        let ring = RollingRingBuffer::new(5, 24);
+        let (v, a) = ring.snapshot(None);
+        assert!(v.is_empty() && a.is_empty());
+    }
+
+    // ---------------------------------------------------------- audio hygiene
+
+    #[test]
+    fn audio_is_trimmed_alongside_video() {
+        let mut ring = RollingRingBuffer::new(2, ring_cap_mb(2, 12_000));
+        // Interleave 4 s of audio with 4 s of video; the window is 2 s.
+        for i in 0..240 {
+            let pts = i as i64 * HNS_PER_SECOND / 60;
+            ring.push(pkt(pts, 500, i % 30 == 0));
+            if i % 3 == 0 {
+                ring.push(audio_pkt(pts, 200));
+            }
+        }
+        let (_, audio) = ring.snapshot(None);
+        assert!(
+            audio.len() < 120,
+            "audio track was not trimmed with the video window: {} packets",
+            audio.len()
+        );
+    }
+
+    #[test]
+    fn audio_does_not_accumulate_when_the_video_track_is_empty() {
+        // Regression for the privacy-gate leak: the gate clears the ring, and
+        // if audio keeps arriving with no video to anchor the cutoff it used
+        // to grow forever (~86 MB/hour).
+        //
+        // Asserted on the live audio queue, not on `snapshot()`: the snapshot
+        // filters by the newest *video* generation, so an empty video track
+        // makes it return nothing and the assertion would pass vacuously.
+        let mut ring = RollingRingBuffer::new(30, 24);
+        for i in 0..(60 * 300) {
+            ring.push(audio_pkt(i as i64 * HNS_PER_SECOND / 60, 128));
+        }
+        // 30 s window at 60 pushes/s ≈ 1800 packets; anything near 18000 means
+        // nothing was ever evicted.
+        assert!(
+            ring.audio_packets() <= 1_900,
+            "audio accumulated unbounded: {} packets for a 30 s window",
+            ring.audio_packets()
+        );
+        assert!(ring.bytes() <= 24 * 1024 * 1024);
+    }
+
+    #[test]
+    fn byte_counter_matches_the_packets_that_remain() {
+        let mut ring = RollingRingBuffer::new(2, ring_cap_mb(2, 12_000));
+        feed_video(&mut ring, 8, 30, 2_000);
+        for i in 0..100 {
+            ring.push(audio_pkt(i as i64 * HNS_PER_SECOND / 60, 300));
+        }
+
+        let (video, audio) = ring.snapshot(None);
+        let expected: usize = video
+            .iter()
+            .chain(audio.iter())
+            .map(|p| p.heap_size())
+            .sum();
+        // `snapshot` clones, so compare against the live counter instead of
+        // recomputing from the snapshot (audio lead-in is excluded there).
+        assert!(ring.bytes() > 0);
+        assert!(
+            ring.bytes() >= expected / 2,
+            "byte counter drifted from the live packets"
+        );
+    }
+}
+

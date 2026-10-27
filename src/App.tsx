@@ -33,7 +33,7 @@ import type {
 } from "./lib/types";
 import { cn } from "./utils/cn";
 
-const APP_VERSION = "1.5.0";
+const APP_VERSION = "1.6.0";
 
 /**
  * How long the privacy-gate state must stay put before it actually flips the
@@ -275,16 +275,21 @@ export default function App() {
       }
       await refreshClips();
 
-      // Silent auto-update probe (native only): no toast unless a newer
-      // GitHub release actually exists. Never blocks startup.
-      if (clipflow.isTauri()) {
+      // Silent update probe — OPT-IN, off by default.
+      //
+      // ClipFlow's proposition is "no telemetry, no background network", but
+      // this used to call `check()` unconditionally on every launch, which made
+      // that claim untrue: it opens an HTTPS connection to github.com before
+      // the user has read anything. The manual button in Settings always
+      // works; this only controls the silent startup probe.
+      if (clipflow.isTauri() && loaded?.checkUpdatesOnStartup) {
         try {
           const update = await check();
           if (update && !cancelled) {
             pushToast(
               "info",
               `Update v${update.version} available`,
-              "Open Settings → About & Updates → CHECK FOR UPDATES to install.",
+              "Open Settings → Application & Updates → Check for Updates to install.",
             );
           }
         } catch {
@@ -430,9 +435,11 @@ export default function App() {
   const patchSettings = useCallback(
     async (patch: Partial<AppSettings>) => {
       try {
+        // `update_settings` already applies the live buffer change to the
+        // running engine, so a second `setBufferSeconds` round-trip here was
+        // pure duplication (two IPC calls per slider move).
         const next = await clipflow.updateSettings(patch);
         setSettings(next);
-        if (patch.bufferSeconds) await clipflow.setBufferSeconds(patch.bufferSeconds);
         // A manual capture tweak means the deck is no longer driven by a
         // profile — drop the active-profile badge until the next apply.
         if (patch.bufferSeconds || patch.targetFps || patch.bitrateKbps || patch.codec) {
@@ -632,7 +639,7 @@ export default function App() {
             privacyHysteresis.current!.commit(gate);
             pushToast(
               "info",
-              gate ? "Privacy mode paused" : "Privacy mode active",
+              gate ? "Privacy mode paused" : "Privacy mode off",
               gate
                 ? "No game is focused — nothing is being recorded right now."
                 : "Gameplay capture resumed.",
@@ -743,7 +750,7 @@ export default function App() {
           "info",
           decision.active ? "ECO mode active" : "ECO mode off",
           decision.active
-            ? `${decision.reason === "battery" ? "Battery low" : "Low RAM"} — buffer ${decision.ecoBufferSeconds}s, fps cap ${decision.ecoFps}.`
+            ? `${decision.reason === "battery" ? "Battery low" : "Low RAM"} — buffer ${decision.ecoBufferSeconds}s live. The ${decision.ecoFps} FPS cap applies after the next engine restart.`
             : `Full ${s.bufferSeconds}s buffer restored.`,
         );
       } catch {
@@ -1916,8 +1923,13 @@ export default function App() {
         )}
       </main>
 
-      {/* Toast Notifications */}
-      <div className="pointer-events-none fixed bottom-4 right-4 z-[60] flex w-80 flex-col gap-2">
+      {/* Toast Notifications — aria-live so screen readers announce them */}
+      <div
+        role="status"
+        aria-live="polite"
+        aria-atomic="false"
+        className="pointer-events-none fixed bottom-4 right-4 z-[60] flex w-80 flex-col gap-2"
+      >
         {toasts.map((t) => (
           <div
             key={t.id}

@@ -14,6 +14,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 use crate::commands::{AppState, EVT_ERROR, EVT_HOTKEY};
+use crate::media::recorder::ClipWriteResult;
 
 pub fn parse(accelerator: &str) -> Result<Shortcut, String> {
     Shortcut::from_str(accelerator)
@@ -108,6 +109,77 @@ pub fn on_shortcut(app: &AppHandle, shortcut: &Shortcut, state: ShortcutState) {
     }
 }
 
+/// Builds the gallery-facing metadata for a freshly written clip.
+///
+/// This used to be duplicated in `commands::save_instant_replay` and
+/// `hotkeys::trigger_save` (~20 identical lines each), so adding a field meant
+/// editing two places and risking drift. Both paths now share this.
+pub fn clip_from_write(
+    write: &ClipWriteResult,
+    game: Option<String>,
+) -> crate::media::library::ClipMetadata {
+    crate::media::library::ClipMetadata {
+        id: format!(
+            "{}-{}",
+            write.file_name,
+            chrono::Utc::now().timestamp_millis()
+        ),
+        path: write.path.clone(),
+        file_name: write.file_name.clone(),
+        title: write.file_name.trim_end_matches(".mp4").replace('_', " "),
+        duration_seconds: write.duration_seconds,
+        size_bytes: write.size_bytes,
+        created_unix_ms: chrono::Utc::now().timestamp_millis(),
+        width: write.width,
+        height: write.height,
+        fps: write.fps,
+        has_audio: write.has_audio,
+        game,
+        // Decoded lazily by the gallery: a synchronous MP4 seek + decode right
+        // after the save hotkey is a mid-match stutter.
+        thumbnail: None,
+        favorite: false,
+        tags: Vec::new(),
+    }
+}
+
+/// Emits the save event and (optionally) raises the deck.
+///
+/// Shared by the hotkey, tray and UI paths so every save produces exactly one
+/// `EVT_CLIP_SAVED`. `raise_deck` is decided by the caller: raising the window
+/// while a game owns the foreground would minimise an exclusive-fullscreen
+/// game, so those paths pass `false` and use a native toast instead.
+///
+/// Returns the metadata that was emitted, so the caller can hand the same
+/// object back to the webview instead of rebuilding it.
+pub fn publish_saved_clip(
+    app: &AppHandle,
+    write: &ClipWriteResult,
+    game: Option<String>,
+    triggered_by: &str,
+    open_trimmer: bool,
+    raise_deck: bool,
+) -> crate::media::library::ClipMetadata {
+    let clip = clip_from_write(write, game);
+    let _ = app.emit(
+        crate::commands::EVT_CLIP_SAVED,
+        crate::commands::ClipSavedPayload {
+            clip: clip.clone(),
+            flush_ms: write.flush_ms,
+            triggered_by: triggered_by.to_string(),
+            open_trimmer,
+        },
+    );
+    if raise_deck {
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.show();
+            let _ = w.unminimize();
+            let _ = w.set_focus();
+        }
+    }
+    clip
+}
+
 /// Fire-and-forget flush. Never blocks the hook thread.
 pub fn trigger_save(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
@@ -115,7 +187,6 @@ pub fn trigger_save(app: AppHandle) {
             return;
         };
 
-        let flush_lock = Arc::clone(&state.flush_lock);
         let engine = Arc::clone(&state.engine);
         if !engine.is_running() {
             let _ = app.emit(
@@ -134,19 +205,10 @@ pub fn trigger_save(app: AppHandle) {
         // The foreground is sampled inside the same blocking task so a hung
         // foreground window cannot stall the async runtime. The privacy check
         // runs there too: never flush desktop footage from a hotkey.
+        // `flush_to_disk` takes the engine's flush lock itself, so every entry
+        // point (deck, hotkey, tray, auto-save) is serialised.
         let privacy_enabled = state.settings.read().privacy_pause_when_unfocused;
         let result = tauri::async_runtime::spawn_blocking(move || {
-            let _guard = match flush_lock.try_lock() {
-                Some(g) => g,
-                None => {
-                    return Err((
-                        crate::media::recorder::RecorderError::Other(
-                            "Save replay already in progress".into(),
-                        ),
-                        None,
-                    ))
-                }
-            };
             let focused = crate::foreground::get_foreground_game();
             let focused_err = focused.clone();
             if privacy_enabled {
@@ -178,33 +240,6 @@ pub fn trigger_save(app: AppHandle) {
 
         match result {
             Ok(Ok((write, focused))) => {
-                // Decode thumbnails later (gallery lazy-load). A synchronous
-                // MP4 seek + decode right after the save hotkey is a
-                // mid-match stutter and is not needed for the saved file.
-                let thumbnail = None;
-
-                let clip = crate::media::library::ClipMetadata {
-                    id: format!(
-                        "{}-{}",
-                        write.file_name,
-                        chrono::Utc::now().timestamp_millis()
-                    ),
-                    path: write.path.clone(),
-                    file_name: write.file_name.clone(),
-                    title: write.file_name.trim_end_matches(".mp4").replace('_', " "),
-                    duration_seconds: write.duration_seconds,
-                    size_bytes: write.size_bytes,
-                    created_unix_ms: chrono::Utc::now().timestamp_millis(),
-                    width: write.width,
-                    height: write.height,
-                    fps: write.fps,
-                    has_audio: write.has_audio,
-                    game: game_folder,
-                    thumbnail,
-                    favorite: false,
-                    tags: Vec::new(),
-                };
-
                 // Never steal focus from a fullscreen game. Raising the deck
                 // mid-match minimises/pauses exclusive-fullscreen games, which
                 // is exactly what the user reported. Only raise ClipFlow when
@@ -233,23 +268,14 @@ pub fn trigger_save(app: AppHandle) {
                         .show();
                 }
 
-                let _ = app.emit(
-                    crate::commands::EVT_CLIP_SAVED,
-                    crate::commands::ClipSavedPayload {
-                        clip,
-                        flush_ms: write.flush_ms,
-                        triggered_by: "hotkey".into(),
-                        open_trimmer: raise_deck,
-                    },
+                publish_saved_clip(
+                    &app,
+                    &write,
+                    game_folder,
+                    "hotkey",
+                    raise_deck,
+                    raise_deck,
                 );
-
-                if raise_deck {
-                    if let Some(w) = app.get_webview_window("main") {
-                        let _ = w.show();
-                        let _ = w.unminimize();
-                        let _ = w.set_focus();
-                    }
-                }
             }
             Ok(Err((e, _))) => {
                 let _ = app.emit(EVT_ERROR, e.to_string());

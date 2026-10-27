@@ -75,10 +75,6 @@ pub struct Settings {
     /// When the foreground game leaves focus, save its last 30 s automatically.
     #[serde(default)]
     pub autosave_on_game_exit: bool,
-    /// Legacy: the always-on-top HUD overlay was removed in favour of a
-    /// lower-overhead deck. Kept so older settings.json files still parse.
-    #[serde(default)]
-    pub hud_enabled: bool,
     /// Game Mode: favours the game when the machine is busy. Caps capture at
     /// 1080p/60, lowers the encoder quality-vs-speed bias and keeps background
     /// UI work quiet. Enabled by default so existing users get the fix after
@@ -109,10 +105,14 @@ pub struct Settings {
     /// Free physical RAM (GiB) below which ECO kicks in.
     #[serde(default = "default_4")]
     pub eco_ram_free_gbs: u32,
-    /// Last user-dragged HUD position (physical screen coords). `None` means
-    /// auto-anchor to the deck's bottom-right corner on show.
+    /// Check GitHub for a newer signed release at startup.
+    ///
+    /// Default `false`: ClipFlow's proposition is "no telemetry, no background
+    /// network", and an unconditional startup check contradicted that. The
+    /// manual button in Settings always works; this only controls the silent
+    /// probe. See README "Zero Telemetry".
     #[serde(default)]
-    pub hud_position: Option<(i32, i32)>,
+    pub check_updates_on_startup: bool,
 }
 
 fn default_30() -> u32 {
@@ -156,7 +156,6 @@ impl Default for Settings {
             auto_cleanup_days: 0,
             organize_by_game: true,
             autosave_on_game_exit: false,
-            hud_enabled: false,
             performance_mode: true,
             privacy_pause_when_unfocused: false,
             game_volume: 100,
@@ -165,7 +164,7 @@ impl Default for Settings {
             adaptive_eco: false,
             eco_battery_threshold_pct: 30,
             eco_ram_free_gbs: 4,
-            hud_position: None,
+            check_updates_on_startup: false,
         }
     }
 }

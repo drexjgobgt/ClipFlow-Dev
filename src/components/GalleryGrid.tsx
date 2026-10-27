@@ -45,6 +45,7 @@ function IconButton({
     <button
       type="button"
       title={title}
+      aria-label={title}
       onClick={onClick}
       className={cn(
         "grid h-7 w-7 place-items-center rounded-md border text-[11px] backdrop-blur-sm transition-colors duration-150",
@@ -135,8 +136,32 @@ const ClipCard = memo(function ClipCard({
     [clip, onOpen, onSelect, selectMode],
   );
 
+  // Keyboard parity with the mouse: Enter/Space opens, `x` toggles selection.
+  // The card used to be an un-focusable <article onClick>, so the library was
+  // completely unusable without a mouse.
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        if (selectMode) onSelect(clip, { ctrl: true, shift: e.shiftKey });
+        else onOpen(clip);
+      } else if (e.key === "x" || e.key === "X") {
+        e.preventDefault();
+        onSelect(clip, { ctrl: true, shift: e.shiftKey });
+      }
+    },
+    [clip, onOpen, onSelect, selectMode],
+  );
+
   return (
     <article
+      role="button"
+      tabIndex={0}
+      aria-label={`${clip.title}, ${formatDuration(clip.duration_seconds)}${
+        clip.game ? `, ${clip.game}` : ""
+      }${clip.favorite ? ", favourite" : ""}`}
+      aria-pressed={selectMode ? selected : undefined}
+      onKeyDown={handleKeyDown}
       className={cn(
         "panel panel-hover group relative cursor-pointer overflow-hidden rounded-xl transition-all duration-150",
         selected

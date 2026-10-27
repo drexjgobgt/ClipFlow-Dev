@@ -50,6 +50,12 @@ impl AudioCapture {
     /// `status` is the engine's shared audio-error slot: the thread writes the
     /// reason it cannot capture (endpoint busy, AAC missing...) so the UI can
     /// show *why* clips come out without audio instead of guessing.
+    ///
+    /// `privacy_gate` is the engine's gate flag: while it is set the ring has
+    /// been cleared and capture is paused, so the audio thread must not push
+    /// either. It used to ignore the gate, which let audio accumulate against
+    /// an empty video queue for as long as the user stayed alt-tabbed.
+    #[allow(clippy::too_many_arguments)]
     pub fn start(
         system: bool,
         mic: bool,
@@ -61,6 +67,7 @@ impl AudioCapture {
         status: Arc<Mutex<Option<String>>>,
         clock: Arc<QpcClock>,
         performance_mode: bool,
+        privacy_gate: Arc<AtomicBool>,
     ) -> Result<Self, RecorderError> {
         let stop = Arc::new(AtomicBool::new(false));
         let mut handles = Vec::new();
@@ -74,6 +81,7 @@ impl AudioCapture {
             let gen_c = Arc::clone(&generation);
             let status_c = Arc::clone(&status);
             let clock_c = Arc::clone(&clock);
+            let gate_c = Arc::clone(&privacy_gate);
             let h = std::thread::Builder::new()
                 .name("clipflow-audio".into())
                 .spawn(move || {
@@ -89,6 +97,7 @@ impl AudioCapture {
                         status_c,
                         clock_c,
                         performance_mode,
+                        gate_c,
                     );
                 })
                 .map_err(|e| RecorderError::Other(format!("audio thread: {e}")))?;
@@ -523,6 +532,7 @@ mod imp {
         status: Arc<Mutex<Option<String>>>,
         clock: Arc<QpcClock>,
         performance_mode: bool,
+        privacy_gate: Arc<AtomicBool>,
     ) {
         unsafe {
             // Game Mode uses NORMAL priority and a 10 ms poll: the loop drains
@@ -718,6 +728,14 @@ mod imp {
                     let pts = next_pts;
                     next_pts += frame_duration_hns;
 
+                    // Privacy mode: the engine cleared the ring and stopped
+                    // feeding video. Pushing audio into an empty ring used to
+                    // accumulate ~86 MB/hour of orphaned packets. Keep the PTS
+                    // advancing so the timeline stays live when the gate lifts.
+                    if privacy_gate.load(Ordering::Acquire) {
+                        continue;
+                    }
+
                     let gen = generation.load(Ordering::Acquire);
                     let ring_ref = &ring;
                     let _ = enc.encode(&pcm, pts, |payload, t, d| {
@@ -782,19 +800,24 @@ mod imp {
         _status: Arc<Mutex<Option<String>>>,
         _clock: Arc<QpcClock>,
         _performance_mode: bool,
+        privacy_gate: Arc<AtomicBool>,
     ) {
         // 21.3 ms AAC frames of silence keep the muxer path exercised.
         let frame_hns = 1024 * HNS_PER_SECOND / SAMPLE_RATE as i64;
         let mut pts = 0i64;
         while !stop.load(Ordering::Acquire) {
-            ring.lock().push(EncodedPacket {
-                track: TrackKind::Audio,
-                data: Arc::from(vec![0u8; 384].into_boxed_slice()),
-                pts_hns: pts,
-                duration_hns: frame_hns,
-                keyframe: true,
-                generation: generation.load(Ordering::Acquire),
-            });
+            // Mirror the Windows path: nothing enters the ring while privacy
+            // mode has the capture paused.
+            if !privacy_gate.load(Ordering::Acquire) {
+                ring.lock().push(EncodedPacket {
+                    track: TrackKind::Audio,
+                    data: Arc::from(vec![0u8; 384].into_boxed_slice()),
+                    pts_hns: pts,
+                    duration_hns: frame_hns,
+                    keyframe: true,
+                    generation: generation.load(Ordering::Acquire),
+                });
+            }
             pts += frame_hns;
             std::thread::sleep(std::time::Duration::from_millis(21));
         }

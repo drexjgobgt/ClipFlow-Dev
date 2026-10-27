@@ -30,9 +30,19 @@ pub fn run() {
     .init();
 
     tauri::Builder::default()
+        // Single instance: one buffer, one encoder session, one DXGI duplicator.
+        // A second launch focuses the existing window instead of fighting over
+        // the output (Desktop Duplication only allows one duplicator per output,
+        // so instance #2 used to fail with a confusing capture error).
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.unminimize();
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_notification::init())
         // Optional "launch at Windows sign-in". Kept entirely native (Rust
         // calls only), so no extra JS surface or capability is needed.
@@ -109,6 +119,19 @@ pub fn run() {
                 if on_top {
                     let _ = w.set_always_on_top(true);
                 }
+            }
+
+            // Widen the asset protocol to whatever output folder is configured.
+            //
+            // `tauri.conf.json` can only declare a static scope
+            // ($VIDEO/ClipFlow/**, $HOME/Videos/ClipFlow/**), but Settings lets
+            // the user point the library anywhere (e.g. D:\Clips). Without this
+            // the gallery thumbnails still worked (they are data URLs from Rust)
+            // while the trimmer's <video> silently refused to load — the classic
+            // "NO PREVIEW STREAM" on a perfectly good clip.
+            if let Some(state) = handle.try_state::<AppState>() {
+                let dir = state.settings.read().output_dir.clone();
+                allow_asset_dir(&handle, &dir);
             }
 
             // Privacy mode starts gated when the deck or desktop is focused
@@ -204,7 +227,6 @@ pub fn run() {
             commands::get_clip_thumbnail,
             commands::trim_clip,
             commands::split_clip,
-            commands::export_clip_gif,
             commands::delete_clip,
             commands::delete_clips,
             commands::delete_all_clips,
@@ -219,12 +241,10 @@ pub fn run() {
             commands::reveal_clip_in_folder,
             commands::open_output_folder,
             commands::open_clip_external,
-            commands::read_clip_as_data_url,
             commands::get_settings,
             commands::update_settings,
             commands::get_monitors,
             commands::get_audio_input_devices,
-            commands::get_output_dir,
             commands::get_foreground_game,
             commands::get_profiles,
             commands::save_profile,
@@ -236,12 +256,8 @@ pub fn run() {
             commands::set_clip_tags,
             commands::set_privacy_gate,
             commands::get_power_state,
-            commands::set_save_hotkey,
-            commands::set_toggle_hotkey,
             commands::open_releases_page,
-            commands::show_main_window,
             commands::hide_main_window,
-            commands::get_system_report,
             commands::quit_app,
             commands::simulate_device_loss,
         ])
@@ -254,6 +270,22 @@ pub fn run() {
                 }
             }
         });
+}
+
+/// Adds `dir` to the `asset:` protocol scope so the webview can stream clips
+/// from a user-chosen output folder.
+///
+/// `tauri.conf.json` only declares a static scope; this extends it at runtime
+/// whenever the folder changes. Scoped to the single configured directory (not
+/// the whole drive), and re-applied on every change rather than accumulating.
+fn allow_asset_dir(app: &tauri::AppHandle, dir: &str) {
+    if dir.trim().is_empty() {
+        return;
+    }
+    let path = std::path::PathBuf::from(dir);
+    if let Err(e) = app.asset_protocol_scope().allow_directory(&path, true) {
+        log::warn!("[clipflow] could not widen asset scope to {dir}: {e}");
+    }
 }
 
 /// Tray menu: everything you need mid-game without alt-tabbing.
@@ -292,11 +324,34 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                         let _ = h.emit(commands::EVT_ERROR, msg);
                         return;
                     }
+                    // Same routing + metadata + event as the hotkey and the
+                    // deck, so a tray save shows up in the gallery immediately
+                    // instead of requiring a manual Rescan.
+                    let game_folder = commands::resolve_game_folder(&state, None);
+                    state.engine.set_output_subfolder(game_folder.clone());
                     let engine = Arc::clone(&state.engine);
-                    let _ = tauri::async_runtime::spawn_blocking(move || {
+                    let written = tauri::async_runtime::spawn_blocking(move || {
                         engine.flush_to_disk(Some(30.0))
                     })
                     .await;
+                    match written {
+                        Ok(Ok(write)) => {
+                            crate::hotkeys::publish_saved_clip(
+                                &h,
+                                &write,
+                                game_folder,
+                                "tray",
+                                false,
+                                false,
+                            );
+                        }
+                        Ok(Err(e)) => {
+                            let _ = h.emit(commands::EVT_ERROR, e.to_string());
+                        }
+                        Err(e) => {
+                            let _ = h.emit(commands::EVT_ERROR, format!("flush task failed: {e}"));
+                        }
+                    }
                 });
             }
             "toggle" => hotkeys::trigger_toggle(app.clone()),

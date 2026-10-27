@@ -763,6 +763,19 @@ export default function SettingsPanel({
             </span>
           </Row>
 
+          <Row
+            label="Check for updates at startup"
+            hint="Sends one HTTPS request to github.com for the signed release manifest. No telemetry, no identifiers. Off by default — use the button below to check manually."
+          >
+            <Toggle
+              on={settings.checkUpdatesOnStartup}
+              onClick={() =>
+                onChange({ checkUpdatesOnStartup: !settings.checkUpdatesOnStartup })
+              }
+              label="Check for updates at startup"
+            />
+          </Row>
+
           <Row label="Check for updates" hint="Verifies release against official signed GitHub manifest.">
             <button
               type="button"
