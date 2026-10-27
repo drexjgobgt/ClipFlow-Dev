@@ -97,9 +97,11 @@ Download the latest version from the [Releases](https://github.com/drexjgobgt/Cl
 
 ClipFlow is local-first. It never uploads clips, never sends telemetry, and needs no account.
 
-The only outbound request the app can make is a **single HTTPS fetch of the signed release manifest** from `github.com` — used to tell you when a new version exists. This is **off by default** and can be enabled in **Settings → Application & Updates → Check for updates at startup**. The manual **Check for Updates** button always works regardless of that setting.
+The only outbound request the app can make is a **single HTTPS fetch of the release manifest** from `github.com` — used to tell you when a new version exists. This is **off by default** and can be enabled in **Settings → Application & Updates → Check for updates at startup**.
 
 Recording, saving, trimming, splitting, tagging and browsing never touch the network.
+
+> **Automatic updates are temporarily unavailable.** The current builds ship plain installers and the in-app updater cannot install a new version; the **Check for Updates** button opens the Releases page instead. See the release notes for the reason and for what to do. This does not affect recording, saving, or any other feature.
 
 ---
 

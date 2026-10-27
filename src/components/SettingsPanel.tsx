@@ -776,7 +776,10 @@ export default function SettingsPanel({
             />
           </Row>
 
-          <Row label="Check for updates" hint="Verifies release against official signed GitHub manifest.">
+          <Row
+            label="Check for updates"
+            hint="Automatic updates are temporarily unavailable in this build — the button opens the Releases page so you can download the newest installer."
+          >
             <button
               type="button"
               onClick={onCheckForUpdates}

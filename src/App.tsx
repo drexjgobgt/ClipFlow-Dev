@@ -806,7 +806,22 @@ export default function App() {
       await relaunch();
     } catch (e) {
       setUpdateProgress(null);
-      pushToast("err", "Update check failed", String(e));
+      // Auto-update is currently unavailable because no signed update manifest
+      // is published (see .github/workflows/release.yml). A raw plugin error
+      // like "Could not fetch a valid release JSON" tells the user nothing, so
+      // explain it and send them to the download page instead.
+      pushToast(
+        "warn",
+        "Automatic updates unavailable",
+        "This build cannot update itself. Download the newest installer from the Releases page — recording is unaffected.",
+      );
+      // Keep the technical detail available without leading with it.
+      console.warn("[clipflow] update check failed", e);
+      try {
+        await clipflow.openReleasesPage();
+      } catch {
+        /* opener unavailable — the toast already told them what to do */
+      }
     } finally {
       setBusy(false);
     }

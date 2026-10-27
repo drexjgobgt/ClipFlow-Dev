@@ -19,8 +19,12 @@ All notable changes to **ClipFlow** are documented here. The project follows [Ke
 
 ### Changed
 
-- **Update checks are now opt-in.** ClipFlow described itself as having "no background updater" while calling the updater on every launch, which opens an HTTPS connection to GitHub before the user has read anything. The startup probe now defaults to **off** and can be enabled in Settings; the manual button always works. README and the bundle description were corrected to match.
+- **Update checks are now opt-in.** ClipFlow described itself as having "no background updater" while calling the updater on every launch, which opens an HTTPS connection to GitHub before the user has read anything. The startup probe now defaults to **off** and can be enabled in Settings. README and the bundle description were corrected to match.
 - **The window is now single-instance.** The code claimed it, but the plugin was never added, so a second launch fought the first over DXGI Desktop Duplication and failed with a confusing capture error. Launching again now focuses the existing window.
+
+### Known limitation
+
+- **Automatic updates are disabled in this build.** The `TAURI_SIGNING_PRIVATE_KEY` secret does not match the minisign public key embedded in `tauri.conf.json`, so no signed `latest.json` can be produced — every release since v1.4.2 failed at the signing step for this reason. This release ships plain installers with `createUpdaterArtifacts: false`. The **Check for Updates** button now says so plainly and opens the Releases page instead of surfacing a raw plugin error. Recording, saving, trimming and the library are unaffected. Restoring auto-update requires a valid key pair; the steps are documented at the top of `.github/workflows/release.yml`, and users on the old key will need one manual reinstall.
 
 ### Removed
 
